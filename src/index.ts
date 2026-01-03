@@ -41,8 +41,29 @@ app.set('trust proxy', 1);
 
 // Security middleware
 app.use(helmet());
+
+// CORS - allow frontend origins
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://whatsappautomation-gamma.vercel.app',
+  'https://whatsappautomation.vercel.app',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, etc)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.some(allowed => origin.startsWith(allowed as string))) {
+      return callback(null, true);
+    }
+    // Allow all vercel preview URLs
+    if (origin.includes('vercel.app')) {
+      return callback(null, true);
+    }
+    return callback(null, true); // Allow all for now
+  },
   credentials: true
 }));
 
