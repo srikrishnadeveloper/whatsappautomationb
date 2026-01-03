@@ -202,8 +202,9 @@ export function timestampToISO(timestamp: admin.firestore.Timestamp | string | D
   
   // Firestore Timestamp-like object with _seconds and _nanoseconds
   if (typeof timestamp === 'object' && '_seconds' in timestamp) {
-    const ts = timestamp as { _seconds: number; _nanoseconds: number };
-    return new Date(ts._seconds * 1000 + ts._nanoseconds / 1000000).toISOString();
+    const ts = timestamp as unknown as { _seconds: number; _nanoseconds: number };
+    const nanoseconds = ts._nanoseconds || 0;
+    return new Date(ts._seconds * 1000 + nanoseconds / 1000000).toISOString();
   }
   
   // Fallback - try to create a date from it
