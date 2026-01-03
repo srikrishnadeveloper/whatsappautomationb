@@ -333,6 +333,37 @@ class HybridActionItemsStore {
     return this.inMemoryStore.getStats();
   }
 
+  async clearAll(): Promise<number> {
+    await this.initialize();
+    
+    let count = 0;
+    
+    if (this.useFirestore && this.firestoreStore) {
+      try {
+        // Get all action items and delete them
+        const { data } = await this.firestoreStore.getAll({ limit: 10000 });
+        for (const item of data) {
+          await this.firestoreStore.delete(item.id);
+          count++;
+        }
+        console.log(`🗑️ Cleared ${count} action items from Firestore`);
+        return count;
+      } catch (error: any) {
+        console.error('❌ Firestore action items clear failed:', error.message);
+        if (await this.handleFirestoreError(error)) {
+          // Fall through to in-memory
+        }
+      }
+    }
+    
+    // In-memory clear
+    const items = await this.inMemoryStore.getAll({ limit: 10000 });
+    count = items.total;
+    this.inMemoryStore = new InMemoryActionItemsStore();
+    console.log(`🗑️ Cleared ${count} action items from in-memory`);
+    return count;
+  }
+
   getStorageType(): string {
     return this.useFirestore ? 'firestore' : 'in-memory';
   }

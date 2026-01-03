@@ -107,6 +107,43 @@ export async function classifyMessageWithAI(
 }
 
 /**
+ * Detect if chat/sender indicates high importance (work, college, client)
+ */
+function detectSenderImportance(senderName?: string, chatName?: string): { isImportant: boolean; context: string } {
+  const name = (senderName || '').toLowerCase();
+  const chat = (chatName || '').toLowerCase();
+  
+  // Work/Professional indicators
+  const workIndicators = ['office', 'work', 'team', 'project', 'client', 'manager', 'boss', 'hr', 'company', 'corp', 'inc', 'ltd', 'business', 'meeting', 'task'];
+  
+  // Educational indicators
+  const eduIndicators = ['college', 'university', 'school', 'class', 'course', 'professor', 'prof', 'teacher', 'study', 'assignment', 'lecture', 'student', 'batch', 'semester'];
+  
+  // Client/Customer indicators
+  const clientIndicators = ['client', 'customer', 'vendor', 'partner', 'deal', 'sales', 'support'];
+  
+  for (const indicator of workIndicators) {
+    if (name.includes(indicator) || chat.includes(indicator)) {
+      return { isImportant: true, context: 'work/professional' };
+    }
+  }
+  
+  for (const indicator of eduIndicators) {
+    if (name.includes(indicator) || chat.includes(indicator)) {
+      return { isImportant: true, context: 'education/academic' };
+    }
+  }
+  
+  for (const indicator of clientIndicators) {
+    if (name.includes(indicator) || chat.includes(indicator)) {
+      return { isImportant: true, context: 'client/business' };
+    }
+  }
+  
+  return { isImportant: false, context: 'general' };
+}
+
+/**
  * Build a structured prompt for the AI model
  */
 function buildClassificationPrompt(
@@ -114,12 +151,20 @@ function buildClassificationPrompt(
   senderName?: string,
   chatName?: string
 ): string {
+  const { isImportant, context } = detectSenderImportance(senderName, chatName);
+  
+  const importanceNote = isImportant 
+    ? `\n\n⚠️ IMPORTANT: This message is from a ${context} context (sender: ${senderName || 'Unknown'}, chat: ${chatName || 'Unknown'}). 
+Messages from work groups, college groups, clients, or professional contacts should be given HIGHER priority by default. 
+If the content seems actionable, prefer "high" or "urgent" priority.`
+    : '';
+
   return `You are an AI assistant that classifies WhatsApp messages into task categories.
 
 CONTEXT:
 - Message: "${message}"
 ${senderName ? `- Sender: ${senderName}` : ''}
-${chatName ? `- Chat: ${chatName}` : ''}
+${chatName ? `- Chat/Group: ${chatName}` : ''}${importanceNote}
 
 TASK:
 Analyze this message and provide a JSON response with the following fields:
@@ -139,7 +184,7 @@ Analyze this message and provide a JSON response with the following fields:
 
 3. priority: Choose ONE of: "urgent", "high", "medium", "low"
    - urgent: Time-sensitive (within hours), uses words like "urgent", "asap", "immediately"
-   - high: Has a deadline within days, important action items
+   - high: Has a deadline within days, important action items, OR from work/college/client groups
    - medium: Regular tasks, no immediate deadline
    - low: Non-urgent personal items or reminders
 
@@ -148,6 +193,12 @@ Analyze this message and provide a JSON response with the following fields:
 5. reasoning: Brief explanation (1-2 sentences) of why you chose this classification
 
 6. is_actionable: Boolean - does this require action/follow-up?
+
+PRIORITY BOOST RULES:
+- Messages from work groups/colleagues → boost priority by 1 level
+- Messages from college/university groups → boost priority by 1 level  
+- Messages from clients/customers → boost to at least "high"
+- Messages mentioning deadlines/meetings → boost to at least "high"
 
 RESPONSE FORMAT (JSON only, no extra text):
 {

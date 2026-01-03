@@ -168,6 +168,20 @@ const MAX_QR_RETRIES = 15; // Maximum QR regenerations before giving up
 const MIN_RECONNECT_DELAY = 10000; // Minimum 10 seconds between reconnect attempts
 const MIN_QR_REGENERATION_DELAY = 55000; // Minimum 55 seconds between QR regenerations
 
+// In-memory cache for processed message IDs to prevent duplicates efficiently
+const processedMessageIds = new Set<string>();
+const MAX_PROCESSED_CACHE = 5000; // Keep last 5000 message IDs in memory
+
+// Manage cache size
+function addToProcessedCache(messageKey: string) {
+  if (processedMessageIds.size >= MAX_PROCESSED_CACHE) {
+    // Remove oldest entries (first 1000)
+    const entries = Array.from(processedMessageIds);
+    entries.slice(0, 1000).forEach(id => processedMessageIds.delete(id));
+  }
+  processedMessageIds.add(messageKey);
+}
+
 /**
  * Process messages that arrived while the system was offline
  * Fetches message history and processes any unprocessed messages
@@ -674,22 +688,36 @@ export async function startWhatsApp(): Promise<void> {
                         msg.message?.extendedTextMessage?.text || 
                         '[Media]';
         const sender = isFromMe ? (currentUser?.name || 'Me') : (msg.pushName || msg.key.remoteJid || 'Unknown');
+        
+        // Get unique message key for deduplication
+        const messageKey = msg.key.id;
+        if (!messageKey) continue;
+
+        // Fast in-memory duplicate check first
+        if (processedMessageIds.has(messageKey)) {
+          console.log(`⏭️ Skipping duplicate (cache): ${messageKey}`);
+          continue;
+        }
+
+        // Then check database for messages not in cache (on wake/restart)
+        if (!processedMessageIds.has(messageKey)) {
+          const allMessages = await hybridMessageStore.getAll({ limit: 200 });
+          const isDuplicate = allMessages.data.some(m => m.metadata?.messageKey === messageKey);
+          
+          if (isDuplicate) {
+            console.log(`⏭️ Skipping duplicate (DB): ${messageKey}`);
+            addToProcessedCache(messageKey); // Add to cache for next time
+            continue;
+          }
+        }
+        
+        // Mark as processed immediately to prevent race conditions
+        addToProcessedCache(messageKey);
 
         // Get message timestamp
         const msgTimestamp = msg.messageTimestamp 
           ? new Date((msg.messageTimestamp as number) * 1000)
           : new Date();
-
-        // For historical messages (append), check if we already have it
-        if (type === 'append') {
-          const existingMessages = await hybridMessageStore.getAll({ 
-            limit: 1,
-            search: msg.key.id || undefined
-          });
-          if (existingMessages.data.length > 0) {
-            continue; // Skip already processed messages
-          }
-        }
 
         messagesProcessed++;
         updateWhatsAppState({ messagesProcessed });

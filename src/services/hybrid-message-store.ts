@@ -284,6 +284,37 @@ class HybridMessageStore {
     this.inMemoryStore.clear();
   }
 
+  async clearAll(): Promise<number> {
+    await this.initialize();
+    
+    let count = 0;
+    
+    if (this.useFirestore && this.firestoreStore) {
+      try {
+        // Get all messages and delete them
+        const { data } = await this.firestoreStore.getAll({ limit: 10000 });
+        for (const msg of data) {
+          await this.firestoreStore.delete(msg.id);
+          count++;
+        }
+        console.log(`🗑️ Cleared ${count} messages from Firestore`);
+        return count;
+      } catch (error: any) {
+        console.error('❌ Firestore clear failed:', error.message);
+        if (error.message?.includes('Could not load the default credentials')) {
+          this.useFirestore = false;
+        }
+      }
+    }
+    
+    // In-memory clear
+    const messages = this.inMemoryStore.getAll({ limit: 10000 });
+    count = messages.total;
+    this.inMemoryStore.clear();
+    console.log(`🗑️ Cleared ${count} messages from in-memory`);
+    return count;
+  }
+
   getStorageType(): string {
     return this.useFirestore ? 'firestore' : 'in-memory';
   }

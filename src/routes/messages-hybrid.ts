@@ -261,4 +261,23 @@ router.post('/bulk', async (req, res) => {
   }
 });
 
+// DELETE /api/messages/clear - Clear all messages
+router.delete('/clear', async (req, res) => {
+  try {
+    const count = await hybridMessageStore.clearAll();
+    res.json({
+      success: true,
+      message: `Cleared ${count} messages`,
+      count,
+      storage: hybridMessageStore.getStorageType()
+    });
+  } catch (error: any) {
+    console.error('Error clearing messages:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 export default router;

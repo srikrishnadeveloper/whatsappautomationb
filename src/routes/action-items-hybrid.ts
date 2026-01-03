@@ -330,4 +330,24 @@ router.post('/bulk/delete', async (req: Request, res: Response) => {
   }
 });
 
+// DELETE /api/actions/clear - Clear all action items
+router.delete('/clear', async (req: Request, res: Response) => {
+  try {
+    const count = await hybridActionItems.clearAll();
+    broadcast('cleared', { count });
+    res.json({
+      success: true,
+      message: `Cleared ${count} action items`,
+      count,
+      storage: hybridActionItems.getStorageType()
+    });
+  } catch (error: any) {
+    console.error('Error clearing action items:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 export default router;
