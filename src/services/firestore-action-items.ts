@@ -127,6 +127,11 @@ class FirestoreActionItemsService extends EventEmitter {
     return actionItem;
   }
 
+  // Alias for create - used by hybrid store
+  async add(item: Omit<ActionItem, 'id' | 'createdAt' | 'updatedAt'>, userId?: string): Promise<ActionItem> {
+    return this.create({ ...item, title: item.title }, userId || item.userId);
+  }
+
   // Create action item manually
   async create(data: Partial<ActionItem> & { title: string }, userId?: string): Promise<ActionItem> {
     const now = admin.firestore.Timestamp.now();
