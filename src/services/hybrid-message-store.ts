@@ -117,7 +117,20 @@ function hasFirebaseCredentials(): boolean {
     const fs = require('fs');
     const path = require('path');
     const serviceAccountPath = path.join(__dirname, '../../firebase-service-account.json');
-    return fs.existsSync(serviceAccountPath) || !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    
+    // Check for service account file (local dev)
+    if (fs.existsSync(serviceAccountPath)) return true;
+    
+    // Check for GOOGLE_APPLICATION_CREDENTIALS env var
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS) return true;
+    
+    // Check for individual credentials (Render production)
+    if (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+      console.log('✅ Firebase credentials detected via env vars');
+      return true;
+    }
+    
+    return false;
   } catch {
     return false;
   }
