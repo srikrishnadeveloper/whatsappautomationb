@@ -24,6 +24,7 @@ import whatsappRouter, { setWhatsAppFunctions } from './routes/whatsapp';
 import logsRouter from './routes/logs';
 import actionItemsRouter from './routes/action-items-hybrid';
 import authRouter from './routes/auth-firebase'; // Firebase Auth Routes
+import searchRouter from './routes/search'; // AI Search Routes
 
 // Import WhatsApp service
 import { startWhatsApp, stopWhatsApp, logoutWhatsApp } from './services/whatsapp-integrated';
@@ -94,6 +95,7 @@ app.use('/api/health', healthRouter);
 app.use('/api/whatsapp', whatsappRouter);
 app.use('/api/logs', logsRouter);
 app.use('/api/actions', actionItemsRouter);
+app.use('/api/search', searchRouter); // AI-powered search
 
 // Root endpoint
 app.get('/', (req, res) => {
