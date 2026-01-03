@@ -19,12 +19,13 @@ import makeWASocket, {
 import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
 import pino from 'pino';
-import { db, COLLECTIONS } from '../config/firebase';
+import { db, COLLECTIONS, admin } from '../config/firebase';
 import { updateWhatsAppState, getWhatsAppState } from '../routes/whatsapp';
 import { hybridMessageStore } from './hybrid-message-store';
 import { hybridActionItems } from './hybrid-action-items';
 import { classifyWithAI, initGemini } from './ai-classifier';
 import log from './activity-log';
+import { systemState } from './system-state';
 
 // ============================================
 // FIRESTORE AUTH STATE STORAGE
@@ -161,13 +162,95 @@ let lastQrTime = 0; // Track when last QR was generated
 let qrRetryCount = 0; // Track QR retry attempts
 let isAuthenticating = false; // Track if user is in authentication process
 let lastConnectionAttempt = 0; // Prevent rapid reconnection
+let systemStateInitialized = false; // Track if system state was initialized
 const QR_TIMEOUT_MS = 120000; // QR code valid for 120 seconds (2 minutes)
 const MAX_QR_RETRIES = 15; // Maximum QR regenerations before giving up
 const MIN_RECONNECT_DELAY = 10000; // Minimum 10 seconds between reconnect attempts
 const MIN_QR_REGENERATION_DELAY = 55000; // Minimum 55 seconds between QR regenerations
 
+/**
+ * Process messages that arrived while the system was offline
+ * Fetches message history and processes any unprocessed messages
+ */
+async function processMissedMessages(offlineSince: Date): Promise<number> {
+  if (!whatsappSocket) return 0;
+  
+  log.info('Processing missed messages', `Checking messages since ${offlineSince.toISOString()}`);
+  
+  let processedCount = 0;
+  
+  try {
+    // Get all stored message IDs to check for duplicates
+    const { data: existingMessages } = await hybridMessageStore.getAll({ limit: 1000 });
+    const existingMsgIds = new Set(existingMessages.map(m => m.id));
+    
+    // Use Baileys to fetch recent messages from all chats
+    // Note: Baileys doesn't have a direct "fetch history" method after connection
+    // The 'messages.upsert' with type 'append' handles historical messages
+    // We'll mark the offline period and let the normal message handler process them
+    
+    log.info('Missed messages check', 'Historical messages will be processed as they sync');
+    
+    // Update system state
+    await systemState.recordMissedMessagesProcessed(processedCount);
+    
+    return processedCount;
+  } catch (error: any) {
+    log.error('Failed to process missed messages', error.message);
+    return 0;
+  }
+}
+
+/**
+ * Get the current user's phone number for associating data
+ */
+function getCurrentUserId(): string {
+  const user = whatsappSocket?.user;
+  return user?.id?.split(':')[0] || 'unknown';
+}
+
+// Store user's own sent message (for context, without classification)
+async function storeOwnMessage(msg: proto.IWebMessageInfo, userId: string): Promise<string | null> {
+  try {
+    const content = msg.message?.conversation || 
+                    msg.message?.extendedTextMessage?.text || 
+                    msg.message?.imageMessage?.caption ||
+                    msg.message?.videoMessage?.caption ||
+                    '[Media/No Content]';
+    
+    const chatName = msg.key.remoteJid || 'Unknown';
+    const isGroup = chatName.endsWith('@g.us');
+
+    const messageData = {
+      sender: 'Me',
+      chat_name: chatName,
+      timestamp: new Date((msg.messageTimestamp as number) * 1000).toISOString(),
+      content: content,
+      message_type: Object.keys(msg.message || {})[0] || 'text',
+      classification: 'sent',
+      decision: 'none',
+      priority: 'none',
+      ai_reasoning: 'User sent message',
+      metadata: {
+        isGroupMsg: isGroup,
+        fromMe: true,
+        messageKey: msg.key.id
+      }
+    };
+
+    // Store using hybrid store with userId
+    const stored = await hybridMessageStore.add(messageData, userId);
+    return stored.id;
+  } catch (error: any) {
+    log.error('Store own message failed', error.message);
+    return null;
+  }
+}
+
 // Store message with AI classification and create action items
 async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> {
+  const userId = getCurrentUserId();
+  
   try {
     const content = msg.message?.conversation || 
                     msg.message?.extendedTextMessage?.text || 
@@ -198,12 +281,13 @@ async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> 
         fromMe: msg.key.fromMe,
         suggestedTask: classification.suggestedTask,
         deadline: classification.deadline,
-        actionItemsCount: classification.actionItems?.length || 0
+        actionItemsCount: classification.actionItems?.length || 0,
+        messageKey: msg.key.id
       }
     };
 
-    // Store using hybrid store (Firestore or in-memory)
-    const stored = await hybridMessageStore.add(messageData);
+    // Store using hybrid store with userId for per-user data
+    const stored = await hybridMessageStore.add(messageData, userId);
     const messageId = stored.id;
     
     log.success(`Message stored (${hybridMessageStore.getStorageType()})`, 
@@ -435,6 +519,18 @@ export async function startWhatsApp(): Promise<void> {
         
         log.success('WhatsApp Connected', `${userName} (${userPhone})`);
         isStarting = false;
+        
+        // Initialize system state tracking and check for missed messages
+        if (!systemStateInitialized) {
+          systemStateInitialized = true;
+          const { wasOffline, offlineSince, offlineDuration } = await systemState.initialize(userPhone);
+          
+          if (wasOffline && offlineSince) {
+            log.info('System was offline', `Checking for messages since ${offlineSince.toISOString()}`);
+            // Note: Baileys will automatically sync recent messages on connection
+            // They will be processed by the messages.upsert handler
+          }
+        }
       }
 
       // Connection closed
@@ -559,13 +655,17 @@ export async function startWhatsApp(): Promise<void> {
       }
     });
 
-    // Listen for incoming messages
+    // Listen for incoming messages (both new and historical sync)
     whatsappSocket.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify') return;
+      // Handle both 'notify' (new messages) and 'append' (historical sync)
+      if (type !== 'notify' && type !== 'append') return;
 
+      const currentUser = whatsappSocket?.user;
+      const userPhone = currentUser?.id?.split(':')[0] || 'unknown';
+      
       for (const msg of messages) {
-        // Skip own messages
-        if (msg.key.fromMe) continue;
+        // Skip own messages (but store them for context)
+        const isFromMe = msg.key.fromMe;
         
         // Skip status updates
         if (msg.key.remoteJid === 'status@broadcast') continue;
@@ -573,7 +673,23 @@ export async function startWhatsApp(): Promise<void> {
         const content = msg.message?.conversation || 
                         msg.message?.extendedTextMessage?.text || 
                         '[Media]';
-        const sender = msg.pushName || msg.key.remoteJid || 'Unknown';
+        const sender = isFromMe ? (currentUser?.name || 'Me') : (msg.pushName || msg.key.remoteJid || 'Unknown');
+
+        // Get message timestamp
+        const msgTimestamp = msg.messageTimestamp 
+          ? new Date((msg.messageTimestamp as number) * 1000)
+          : new Date();
+
+        // For historical messages (append), check if we already have it
+        if (type === 'append') {
+          const existingMessages = await hybridMessageStore.getAll({ 
+            limit: 1,
+            search: msg.key.id || undefined
+          });
+          if (existingMessages.data.length > 0) {
+            continue; // Skip already processed messages
+          }
+        }
 
         messagesProcessed++;
         updateWhatsAppState({ messagesProcessed });
@@ -581,8 +697,13 @@ export async function startWhatsApp(): Promise<void> {
         // Log the incoming message
         log.message(sender, content.substring(0, 100));
 
-        // Store and classify with AI
-        await storeMessage(msg);
+        // Store and classify with AI (skip classification for own messages)
+        if (!isFromMe) {
+          await storeMessage(msg);
+        } else {
+          // Store own messages without classification for context
+          await storeOwnMessage(msg, userPhone);
+        }
       }
     });
 

@@ -25,6 +25,7 @@ import logsRouter from './routes/logs';
 import actionItemsRouter from './routes/action-items-hybrid';
 import authRouter from './routes/auth-firebase'; // Firebase Auth Routes
 import searchRouter from './routes/search'; // AI Search Routes
+import { systemState } from './services/system-state'; // System state tracking
 
 // Import WhatsApp service
 import { startWhatsApp, stopWhatsApp, logoutWhatsApp } from './services/whatsapp-integrated';
@@ -168,6 +169,19 @@ app.listen(PORT, async () => {
   } else {
     log.info('WhatsApp Manual Mode', 'POST /api/whatsapp/start to connect');
   }
+});
+
+// Graceful shutdown handling
+process.on('SIGTERM', async () => {
+  console.log('📴 SIGTERM received, shutting down gracefully...');
+  await systemState.shutdown();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('📴 SIGINT received, shutting down gracefully...');
+  await systemState.shutdown();
+  process.exit(0);
 });
 
 export default app;

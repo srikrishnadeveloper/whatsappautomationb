@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import { supabase } from '../config/supabase';
+import { systemState } from '../services/system-state';
 
 const router = Router();
 
@@ -12,10 +13,12 @@ router.get('/', async (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
+    systemState: systemState.getState(),
     services: {
       api: 'ok',
       supabase: 'not configured',
-      gemini: process.env.GOOGLE_AI_API_KEY ? 'configured' : 'not configured'
+      gemini: process.env.GOOGLE_AI_API_KEY ? 'configured' : 'not configured',
+      firebase: process.env.FIREBASE_PROJECT_ID ? 'configured' : 'not configured'
     }
   };
 

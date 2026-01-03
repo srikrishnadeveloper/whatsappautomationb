@@ -61,7 +61,8 @@ export const COLLECTIONS = {
   RULES: 'rules',
   TASKS: 'tasks',
   FEEDBACK: 'feedback',
-  WHATSAPP_SESSIONS: 'whatsapp_sessions'
+  WHATSAPP_SESSIONS: 'whatsapp_sessions',
+  SYSTEM: 'system'
 } as const;
 
 // Database types (matching previous schema)
