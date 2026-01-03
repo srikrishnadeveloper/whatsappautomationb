@@ -163,10 +163,10 @@ let qrRetryCount = 0; // Track QR retry attempts
 let isAuthenticating = false; // Track if user is in authentication process
 let lastConnectionAttempt = 0; // Prevent rapid reconnection
 let systemStateInitialized = false; // Track if system state was initialized
-const QR_TIMEOUT_MS = 120000; // QR code valid for 120 seconds (2 minutes)
-const MAX_QR_RETRIES = 15; // Maximum QR regenerations before giving up
-const MIN_RECONNECT_DELAY = 10000; // Minimum 10 seconds between reconnect attempts
-const MIN_QR_REGENERATION_DELAY = 55000; // Minimum 55 seconds between QR regenerations
+const QR_TIMEOUT_MS = 300000; // QR code valid for 300 seconds (5 minutes)
+const MAX_QR_RETRIES = 30; // Maximum QR regenerations before giving up
+const MIN_RECONNECT_DELAY = 30000; // Minimum 30 seconds between reconnect attempts
+const MIN_QR_REGENERATION_DELAY = 120000; // Minimum 2 minutes between QR regenerations
 
 // In-memory cache for processed message IDs to prevent duplicates efficiently
 const processedMessageIds = new Set<string>();
