@@ -156,8 +156,11 @@ class HybridMessageStore {
     
     if (this.useFirestore && this.firestoreStore) {
       try {
-        return await this.firestoreStore.add(message, userId);
+        const result = await this.firestoreStore.add(message, userId);
+        console.log(`💾 Message SAVED to Firestore (ID: ${result.id}, User: ${userId || 'no-user'})`);
+        return result;
       } catch (error: any) {
+        console.error('❌ Firestore save failed:', error.message);
         // If Firestore fails at runtime, fall back to in-memory
         if (error.message?.includes('Could not load the default credentials')) {
           console.log('⚠️ Firestore credentials expired, falling back to in-memory');
@@ -168,7 +171,9 @@ class HybridMessageStore {
       }
     }
     
-    return this.inMemoryStore.add(message);
+    const result = this.inMemoryStore.add(message);
+    console.log(`📦 Message saved to IN-MEMORY (ID: ${result.id}) - Will be lost on restart!`);
+    return result;
   }
 
   async get(id: string): Promise<StoredMessage | undefined> {

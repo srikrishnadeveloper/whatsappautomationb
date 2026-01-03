@@ -14,6 +14,13 @@ const hasServiceAccount = fs.existsSync(serviceAccountPath);
 // Check for environment variables
 const hasEnvCredentials = process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY;
 
+console.log('🔥 Firebase Configuration:');
+console.log('   - Project ID:', process.env.FIREBASE_PROJECT_ID || 'mindlineforai');
+console.log('   - Has service account file:', hasServiceAccount);
+console.log('   - Has env credentials:', hasEnvCredentials);
+console.log('   - Client email:', process.env.FIREBASE_CLIENT_EMAIL ? '✓ Set' : '✗ Not set');
+console.log('   - Private key:', process.env.FIREBASE_PRIVATE_KEY ? `✓ Set (${process.env.FIREBASE_PRIVATE_KEY.length} chars)` : '✗ Not set');
+
 // Initialize Firebase Admin
 if (!admin.apps.length) {
   if (hasServiceAccount) {
@@ -26,16 +33,28 @@ if (!admin.apps.length) {
     console.log('✅ Firebase Admin SDK initialized with service account file');
   } else if (hasEnvCredentials) {
     // Use environment variables (production on Render)
-    admin.initializeApp({
-      credential: admin.credential.cert({
+    try {
+      const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+      console.log('   - Private key starts with:', privateKey?.substring(0, 30) + '...');
+      console.log('   - Private key ends with:', '...' + privateKey?.substring(privateKey.length - 30));
+      
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID || 'mindlineforai',
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: privateKey,
+        }),
         projectId: process.env.FIREBASE_PROJECT_ID || 'mindlineforai',
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        // Handle escaped newlines in private key
-        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-      }),
-      projectId: process.env.FIREBASE_PROJECT_ID || 'mindlineforai',
-    });
-    console.log('✅ Firebase Admin SDK initialized with environment variables');
+      });
+      console.log('✅ Firebase Admin SDK initialized with environment variables');
+    } catch (error: any) {
+      console.error('❌ Firebase initialization error:', error.message);
+      // Fallback to no credentials
+      admin.initializeApp({
+        projectId: process.env.FIREBASE_PROJECT_ID || 'mindlineforai',
+      });
+      console.log('⚠️ Firebase Admin SDK initialized without credentials (fallback)');
+    }
   } else {
     // Fallback: Initialize without credentials (limited functionality)
     admin.initializeApp({
@@ -48,6 +67,28 @@ if (!admin.apps.length) {
 
 // Get Firestore database instance
 export const db = admin.firestore();
+
+// Test Firestore connection
+async function testFirestoreConnection() {
+  try {
+    const testDoc = db.collection('_connection_test').doc('test');
+    await testDoc.set({ 
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      message: 'Firebase connection test successful'
+    });
+    console.log('✅ Firestore connection TEST PASSED - Can read/write data!');
+    // Clean up test document
+    await testDoc.delete();
+    return true;
+  } catch (error: any) {
+    console.error('❌ Firestore connection TEST FAILED:', error.message);
+    console.error('   Full error:', error);
+    return false;
+  }
+}
+
+// Run connection test on startup
+testFirestoreConnection();
 
 // Get Firebase Auth instance
 export const auth = admin.auth();

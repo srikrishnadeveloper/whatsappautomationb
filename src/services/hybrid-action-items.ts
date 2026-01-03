@@ -216,8 +216,11 @@ class HybridActionItemsStore {
     
     if (this.useFirestore && this.firestoreStore) {
       try {
-        return await this.firestoreStore.add(item);
+        const result = await this.firestoreStore.add(item);
+        console.log(`💾 Action item SAVED to Firestore (ID: ${result.id}, Title: ${item.title.substring(0, 30)}...)`);
+        return result;
       } catch (error: any) {
+        console.error('❌ Firestore action item save failed:', error.message);
         if (await this.handleFirestoreError(error)) {
           return this.inMemoryStore.add(item);
         }
@@ -225,7 +228,9 @@ class HybridActionItemsStore {
       }
     }
     
-    return this.inMemoryStore.add(item);
+    const result = this.inMemoryStore.add(item);
+    console.log(`📦 Action item saved to IN-MEMORY (ID: ${result.id}) - Will be lost on restart!`);
+    return result;
   }
 
   async get(id: string): Promise<ActionItem | undefined> {
