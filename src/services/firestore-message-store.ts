@@ -64,54 +64,107 @@ class FirestoreMessageStore {
     offset?: number;
     userId?: string;
   }): Promise<{ data: StoredMessage[]; total: number }> {
-    let query: FirebaseFirestore.Query = this.collection.orderBy('createdAt', 'desc');
+    try {
+      let query: FirebaseFirestore.Query = this.collection.orderBy('createdAt', 'desc');
 
-    // Apply filters
-    if (filters?.classification) {
-      query = query.where('classification', '==', filters.classification);
-    }
-    if (filters?.decision) {
-      query = query.where('decision', '==', filters.decision);
-    }
-    if (filters?.priority) {
-      query = query.where('priority', '==', filters.priority);
-    }
-    if (filters?.userId) {
-      query = query.where('userId', '==', filters.userId);
-    }
-
-    // Get total count (limited approach due to Firestore limitations)
-    const countSnapshot = await query.limit(1000).get();
-    const total = countSnapshot.size;
-
-    // Apply pagination
-    const limit = filters?.limit || 50;
-    const offset = filters?.offset || 0;
-
-    let paginatedQuery = query.limit(limit);
-    
-    // Skip offset documents (Firestore doesn't support offset, so we use startAfter)
-    if (offset > 0) {
-      const skipDocs = await query.limit(offset).get();
-      if (!skipDocs.empty) {
-        const lastDoc = skipDocs.docs[skipDocs.docs.length - 1];
-        paginatedQuery = query.startAfter(lastDoc).limit(limit);
+      // Apply userId filter first (most important for data isolation)
+      if (filters?.userId) {
+        query = query.where('userId', '==', filters.userId);
       }
+
+      // Apply other filters
+      if (filters?.classification) {
+        query = query.where('classification', '==', filters.classification);
+      }
+      if (filters?.decision) {
+        query = query.where('decision', '==', filters.decision);
+      }
+      if (filters?.priority) {
+        query = query.where('priority', '==', filters.priority);
+      }
+
+      // Get total count (limited approach due to Firestore limitations)
+      const countSnapshot = await query.limit(1000).get();
+      const total = countSnapshot.size;
+
+      // Apply pagination
+      const limit = filters?.limit || 50;
+      const offset = filters?.offset || 0;
+
+      let paginatedQuery = query.limit(limit);
+      
+      // Skip offset documents (Firestore doesn't support offset, so we use startAfter)
+      if (offset > 0) {
+        const skipDocs = await query.limit(offset).get();
+        if (!skipDocs.empty) {
+          const lastDoc = skipDocs.docs[skipDocs.docs.length - 1];
+          paginatedQuery = query.startAfter(lastDoc).limit(limit);
+        }
+      }
+
+      const snapshot = await paginatedQuery.get();
+      let messages = snapshot.docs.map(doc => this.docToMessage(doc.id, doc.data()));
+
+      // Apply search filter client-side (Firestore doesn't support full-text search)
+      if (filters?.search) {
+        const searchLower = filters.search.toLowerCase();
+        messages = messages.filter(m =>
+          m.content.toLowerCase().includes(searchLower) ||
+          m.sender.toLowerCase().includes(searchLower)
+        );
+      }
+
+      return { data: messages, total };
+    } catch (error: any) {
+      // If index is missing, fall back to client-side filtering
+      if (error?.code === 9 || error?.message?.includes('index')) {
+        console.warn('Firestore index missing, falling back to client-side filtering');
+        
+        // Fetch all messages without complex filters
+        let query: FirebaseFirestore.Query = this.collection;
+        if (filters?.userId) {
+          query = query.where('userId', '==', filters.userId);
+        }
+        
+        const snapshot = await query.limit(1000).get();
+        let messages = snapshot.docs.map(doc => this.docToMessage(doc.id, doc.data()));
+        
+        // Apply filters client-side
+        if (filters?.classification) {
+          messages = messages.filter(m => m.classification === filters.classification);
+        }
+        if (filters?.decision) {
+          messages = messages.filter(m => m.decision === filters.decision);
+        }
+        if (filters?.priority) {
+          messages = messages.filter(m => m.priority === filters.priority);
+        }
+        if (filters?.search) {
+          const searchLower = filters.search.toLowerCase();
+          messages = messages.filter(m =>
+            m.content.toLowerCase().includes(searchLower) ||
+            m.sender.toLowerCase().includes(searchLower)
+          );
+        }
+        
+        // Sort by created_at descending
+        messages.sort((a, b) => {
+          const dateA = new Date(a.created_at || 0).getTime();
+          const dateB = new Date(b.created_at || 0).getTime();
+          return dateB - dateA;
+        });
+        
+        const total = messages.length;
+        const limit = filters?.limit || 50;
+        const offset = filters?.offset || 0;
+        
+        return { 
+          data: messages.slice(offset, offset + limit), 
+          total 
+        };
+      }
+      throw error;
     }
-
-    const snapshot = await paginatedQuery.get();
-    let messages = snapshot.docs.map(doc => this.docToMessage(doc.id, doc.data()));
-
-    // Apply search filter client-side (Firestore doesn't support full-text search)
-    if (filters?.search) {
-      const searchLower = filters.search.toLowerCase();
-      messages = messages.filter(m =>
-        m.content.toLowerCase().includes(searchLower) ||
-        m.sender.toLowerCase().includes(searchLower)
-      );
-    }
-
-    return { data: messages, total };
   }
 
   // Update a message
@@ -175,8 +228,17 @@ class FirestoreMessageStore {
     let pending_review = 0;
 
     messages.forEach(m => {
-      // Recent count
-      const createdAt = m.createdAt?.toDate?.() || new Date(m.created_at);
+      // Recent count - handle both Timestamp objects and ISO strings
+      let createdAt: Date;
+      if (m.createdAt?.toDate) {
+        createdAt = m.createdAt.toDate();
+      } else if (typeof m.createdAt === 'string') {
+        createdAt = new Date(m.createdAt);
+      } else if (m.created_at) {
+        createdAt = new Date(m.created_at);
+      } else {
+        createdAt = new Date(0);
+      }
       if (createdAt > oneDayAgo) recent_24h++;
 
       // Classification counts
