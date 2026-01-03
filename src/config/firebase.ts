@@ -181,8 +181,18 @@ export interface FirebaseRule {
 }
 
 // Helper to convert Firestore Timestamp to ISO string
-export function timestampToISO(timestamp: admin.firestore.Timestamp | null): string | null {
-  return timestamp ? timestamp.toDate().toISOString() : null;
+// Safely handles strings, Date objects, and Firestore Timestamps
+export function timestampToISO(timestamp: any): string | null {
+  if (!timestamp) return null;
+  if (typeof timestamp === 'string') return timestamp;
+  if (timestamp instanceof Date) return timestamp.toISOString();
+  if (timestamp && typeof timestamp.toDate === 'function') {
+    try { return timestamp.toDate().toISOString(); } catch { return null; }
+  }
+  if (timestamp && timestamp._seconds !== undefined) {
+    return new Date(timestamp._seconds * 1000).toISOString();
+  }
+  return null;
 }
 
 // Helper to convert ISO string to Firestore Timestamp  
