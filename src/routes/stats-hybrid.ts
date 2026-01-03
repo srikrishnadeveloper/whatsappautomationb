@@ -5,6 +5,7 @@
 
 import { Router } from 'express';
 import { hybridMessageStore } from '../services/hybrid-message-store';
+import { hybridActionItems } from '../services/hybrid-action-items';
 
 const router = Router();
 
@@ -13,12 +14,26 @@ router.get('/', async (req, res) => {
   try {
     const stats = await hybridMessageStore.getStats();
     
+    // Get action items count
+    const { data: actions, total: actionsTotal } = await hybridActionItems.getAll({ limit: 1000 });
+    const pendingActions = actions.filter((a: any) => a.status === 'pending').length;
+    
+    // Get recent 24h count
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: allMessages } = await hybridMessageStore.getAll({ limit: 1000 });
+    const recent24h = allMessages.filter((m: any) => {
+      const timestamp = m.created_at || m.timestamp;
+      return timestamp && timestamp >= yesterday;
+    }).length;
+    
     res.json({
       success: true,
       data: {
         overview: {
           total_messages: stats.total || 0,
-          recent_24h: 0
+          recent_24h: recent24h,
+          tasks_created: actionsTotal || 0,
+          pending_review: pendingActions || 0
         },
         by_classification: stats.byClassification || {},
         by_decision: stats.byDecision || {},
