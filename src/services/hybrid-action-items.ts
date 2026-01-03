@@ -222,13 +222,15 @@ class HybridActionItemsStore {
       } catch (error: any) {
         console.error('❌ Firestore action item save failed:', error.message);
         if (await this.handleFirestoreError(error)) {
-          return this.inMemoryStore.add(item);
+          const fallbackResult = await this.inMemoryStore.add(item);
+          console.log(`📦 Action item saved to IN-MEMORY (ID: ${fallbackResult.id}) - Will be lost on restart!`);
+          return fallbackResult;
         }
         throw error;
       }
     }
     
-    const result = this.inMemoryStore.add(item);
+    const result = await this.inMemoryStore.add(item);
     console.log(`📦 Action item saved to IN-MEMORY (ID: ${result.id}) - Will be lost on restart!`);
     return result;
   }
