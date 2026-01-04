@@ -9,13 +9,13 @@ import { EventEmitter } from 'events';
 const router = Router();
 
 // Import startWhatsApp and stopWhatsApp functions
-let startWhatsAppFn: (() => Promise<void>) | null = null;
+let startWhatsAppFn: ((force?: boolean) => Promise<void>) | null = null;
 let stopWhatsAppFn: (() => Promise<void>) | null = null;
 let logoutWhatsAppFn: (() => Promise<void>) | null = null;
 
 // Set the WhatsApp functions (called from index.ts after import)
 export function setWhatsAppFunctions(
-  start: () => Promise<void>,
+  start: (force?: boolean) => Promise<void>,
   stop: () => Promise<void>,
   logout?: () => Promise<void>
 ) {
@@ -92,7 +92,10 @@ router.get('/status', (req: Request, res: Response) => {
 
 // POST /api/whatsapp/start - Start WhatsApp (trigger connection)
 router.post('/start', async (req: Request, res: Response) => {
-  if (whatsappState.status === 'connected') {
+  // Check for force parameter from request body
+  const forceConnect = req.body?.force === true;
+  
+  if (whatsappState.status === 'connected' && !forceConnect) {
     return res.json({
       success: true,
       message: 'WhatsApp is already connected',
@@ -100,7 +103,9 @@ router.post('/start', async (req: Request, res: Response) => {
     });
   }
 
-  if (whatsappState.status === 'initializing' || whatsappState.status === 'qr_ready') {
+  // Allow restart if status is error or if force is requested
+  // This helps users recover from stuck states
+  if (!forceConnect && (whatsappState.status === 'initializing' || whatsappState.status === 'qr_ready')) {
     return res.json({
       success: true,
       message: 'WhatsApp is already starting',
@@ -108,10 +113,10 @@ router.post('/start', async (req: Request, res: Response) => {
     });
   }
 
-  // Actually start WhatsApp
+  // Actually start WhatsApp with force=true since this is user-initiated
   if (startWhatsAppFn) {
-    // Start asynchronously
-    startWhatsAppFn().catch(err => {
+    // Start asynchronously - always use force=true for user actions
+    startWhatsAppFn(true).catch(err => {
       console.error('WhatsApp start error:', err);
       updateWhatsAppState({ 
         status: 'error', 
