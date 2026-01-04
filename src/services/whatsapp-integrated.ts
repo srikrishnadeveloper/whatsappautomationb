@@ -630,64 +630,113 @@ export async function startWhatsApp(): Promise<void> {
             error: 'Logged out from WhatsApp'
           });
         } else if (statusCode === DisconnectReason.restartRequired) {
-          // Restart required - common after pairing, handle gracefully
-          log.info('Restart Required', 'Reconnecting after pairing...');
-          isStarting = false;
-          connectionHealthy = false;
-          
-          // Quick reconnect for restart required - use shorter delay for better UX
-          updateWhatsAppState({
-            status: 'connecting',
-            progressText: 'Reconnecting after pairing...'
-          });
-          
-          // Don't count restart as a failure - reset attempts
-          reconnectAttempts = 0;
-          scheduleReconnect(3000, 'restart required after pairing');
-        } else if (statusCode === 428) {
-          // Status 428 = QR timeout / Connection Terminated by Server
-          // This is normal when QR isn't scanned - handle gracefully
-          log.info('QR Timeout', 'QR code expired, generating new one...');
-          isStarting = false;
-          connectionHealthy = false;
-          
+          // Restart required - common after pairing
+          // BUT: If we're still showing QR code, this might be a false trigger
           const currentState = getWhatsAppState();
           
-          // Only regenerate if we haven't exceeded max retries
-          if (qrRetryCount < MAX_QR_RETRIES) {
-            // Show user-friendly message while waiting for new QR
-            updateWhatsAppState({
-              status: 'qr_ready',
-              progressText: `QR expired, generating new code... (${qrRetryCount}/${MAX_QR_RETRIES})`
-            });
-            
-            const now = Date.now();
-            const timeSinceLastQr = now - lastQrTime;
-            // Wait minimum time before regenerating QR
-            const delay = Math.max(5000, 60000 - timeSinceLastQr);
-            console.log(`⏳ Will regenerate QR in ${Math.round(delay/1000)}s`);
-            
-            // Don't count QR timeout as reconnect failure
-            scheduleReconnect(delay, 'QR timeout - generating new QR');
+          if (currentState.status === 'qr_ready' && currentState.qrCode) {
+            // We're still showing QR - don't interrupt, just log
+            console.log('⚠️ Restart required during QR display - ignoring, keeping QR visible');
+            log.info('Restart Required', 'Keeping QR code visible for scanning...');
+            isStarting = false;
+            // Don't do anything - keep showing the QR code
+            // The user can still scan it
           } else {
-            // Max retries reached - let user know they need to try again
+            // Normal restart required (after pairing) - reconnect
+            log.info('Restart Required', 'Reconnecting after pairing...');
+            isStarting = false;
+            connectionHealthy = false;
+            
+            // Quick reconnect for restart required - use shorter delay for better UX
             updateWhatsAppState({
-              status: 'disconnected',
-              qrCode: null,
-              progressText: 'QR code attempts exhausted',
-              error: 'QR code expired too many times. Please click Connect to try again.'
+              status: 'connecting',
+              progressText: 'Reconnecting after pairing...'
             });
-            qrRetryCount = 0;
+            
+            // Don't count restart as a failure - reset attempts
             reconnectAttempts = 0;
+            scheduleReconnect(3000, 'restart required after pairing');
+          }
+        } else if (statusCode === 428) {
+          // Status 428 = QR timeout / Connection Terminated by Server
+          // Check if we still have a valid QR that user might be scanning
+          const currentState = getWhatsAppState();
+          const now = Date.now();
+          const timeSinceLastQr = now - lastQrTime;
+          
+          // If QR was generated less than 50 seconds ago, keep showing it
+          if (currentState.status === 'qr_ready' && currentState.qrCode && timeSinceLastQr < 50000) {
+            console.log('⚠️ QR timeout but QR is still fresh - keeping visible');
+            log.info('Connection Reset', 'QR code still valid, waiting for scan...');
+            isStarting = false;
+            // Keep the current QR visible - don't clear it
+            // Schedule a delayed reconnect only if QR isn't scanned
+            clearScheduledReconnect();
+            scheduledReconnect = setTimeout(() => {
+              scheduledReconnect = null;
+              const state = getWhatsAppState();
+              if (state.status !== 'connected') {
+                console.log('🔄 QR still not scanned, regenerating...');
+                startWhatsApp();
+              }
+            }, 60000 - timeSinceLastQr + 5000); // Wait until QR expires + 5s buffer
+          } else {
+            // QR is old or not showing - regenerate
+            log.info('QR Timeout', 'QR code expired, generating new one...');
+            isStarting = false;
+            connectionHealthy = false;
+            
+            // Only regenerate if we haven't exceeded max retries
+            if (qrRetryCount < MAX_QR_RETRIES) {
+              // Show user-friendly message while waiting for new QR
+              updateWhatsAppState({
+                status: 'qr_ready',
+                progressText: `QR expired, generating new code... (${qrRetryCount}/${MAX_QR_RETRIES})`
+              });
+              
+              // Wait minimum time before regenerating QR
+              const delay = Math.max(5000, 60000 - timeSinceLastQr);
+              console.log(`⏳ Will regenerate QR in ${Math.round(delay/1000)}s`);
+              
+              // Don't count QR timeout as reconnect failure
+              scheduleReconnect(delay, 'QR timeout - generating new QR');
+            } else {
+              // Max retries reached - let user know they need to try again
+              updateWhatsAppState({
+                status: 'disconnected',
+                qrCode: null,
+                progressText: 'QR code attempts exhausted',
+                error: 'QR code expired too many times. Please click Connect to try again.'
+              });
+              qrRetryCount = 0;
+              reconnectAttempts = 0;
+            }
           }
         } else if (statusCode === DisconnectReason.connectionClosed || 
                    statusCode === DisconnectReason.connectionLost) {
-          // Connection issues - try to reconnect with smart backoff
-          connectionHealthy = false;
-          isStarting = false;
+          // Connection issues - check if we're showing QR first
+          const currentState = getWhatsAppState();
+          const now = Date.now();
+          const timeSinceLastQr = now - lastQrTime;
           
-          if (isAuthenticating) {
+          // If QR is showing and still fresh, keep it visible
+          if (currentState.status === 'qr_ready' && currentState.qrCode && timeSinceLastQr < 55000) {
+            console.log('⚠️ Connection closed during QR display - keeping QR visible');
+            log.info('Connection Reset', 'QR code still valid, waiting for scan...');
+            isStarting = false;
+            // Keep QR visible, schedule regeneration after it expires
+            clearScheduledReconnect();
+            scheduledReconnect = setTimeout(() => {
+              scheduledReconnect = null;
+              const state = getWhatsAppState();
+              if (state.status !== 'connected') {
+                startWhatsApp();
+              }
+            }, 60000 - timeSinceLastQr + 5000);
+          } else if (isAuthenticating) {
             log.info('Authentication in progress', 'Waiting for device confirmation...');
+            connectionHealthy = false;
+            isStarting = false;
             updateWhatsAppState({
               status: 'authenticating',
               progressText: 'Waiting for confirmation on your phone...'
@@ -695,6 +744,9 @@ export async function startWhatsApp(): Promise<void> {
             // Give more time during authentication
             scheduleReconnect(MIN_RECONNECT_DELAY, 'authentication in progress');
           } else if (shouldReconnect) {
+            connectionHealthy = false;
+            isStarting = false;
+            
             // Check if we were recently connected - use shorter delay
             const wasRecentlyConnected = lastSuccessfulConnection && 
               (Date.now() - lastSuccessfulConnection) < 300000; // Within 5 minutes
@@ -716,17 +768,38 @@ export async function startWhatsApp(): Promise<void> {
             }
           }
         } else if (shouldReconnect) {
-          // Other reconnectable errors - with exponential backoff
-          log.info('Reconnecting', `Error: ${errorMessage}`);
-          connectionHealthy = false;
-          isStarting = false;
+          // Other reconnectable errors - check if QR is showing first
+          const currentState = getWhatsAppState();
+          const now = Date.now();
+          const timeSinceLastQr = now - lastQrTime;
           
-          updateWhatsAppState({
-            status: 'connecting',
-            progressText: `Reconnecting... (${errorMessage})`
-          });
-          
-          scheduleReconnect(getReconnectDelay(), `error: ${errorMessage}`);
+          // If QR is showing and still fresh, keep it visible
+          if (currentState.status === 'qr_ready' && currentState.qrCode && timeSinceLastQr < 55000) {
+            console.log(`⚠️ Error during QR display (${errorMessage}) - keeping QR visible`);
+            log.info('Connection Issue', 'QR code still valid, waiting for scan...');
+            isStarting = false;
+            // Keep QR visible, schedule regeneration after it expires
+            clearScheduledReconnect();
+            scheduledReconnect = setTimeout(() => {
+              scheduledReconnect = null;
+              const state = getWhatsAppState();
+              if (state.status !== 'connected') {
+                startWhatsApp();
+              }
+            }, 60000 - timeSinceLastQr + 5000);
+          } else {
+            // No QR showing - do normal reconnect
+            log.info('Reconnecting', `Error: ${errorMessage}`);
+            connectionHealthy = false;
+            isStarting = false;
+            
+            updateWhatsAppState({
+              status: 'connecting',
+              progressText: `Reconnecting... (${errorMessage})`
+            });
+            
+            scheduleReconnect(getReconnectDelay(), `error: ${errorMessage}`);
+          }
         } else {
           // Unrecoverable error - reset everything
           qrRetryCount = 0;
