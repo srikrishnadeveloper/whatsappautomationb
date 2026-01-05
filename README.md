@@ -327,8 +327,11 @@ Stores all incoming WhatsApp messages with classification results.
 | `message_type` | TEXT | Type (text, image, video, etc.) |
 | `classification` | TEXT | AI classification result |
 | `decision` | TEXT | Action decision (create/ignore/review) |
+| `notion_page_id` | TEXT | Link to created Notion task |
 | `ai_reasoning` | TEXT | AI explanation |
 | `metadata` | JSONB | Additional data (attachments, etc.) |
+| `created_at` | TIMESTAMPTZ | Creation timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
 
 #### Rules
 Custom filtering preferences and automation rules.
@@ -338,10 +341,13 @@ Custom filtering preferences and automation rules.
 | `id` | UUID | Primary key |
 | `rule_type` | TEXT | Rule type (keyword, contact, group) |
 | `contact_name` | TEXT | Contact filter |
+| `group_name` | TEXT | Group filter |
 | `keywords` | TEXT[] | Keyword array |
 | `priority` | TEXT | Priority level |
 | `category` | TEXT | Category (work, study, personal) |
 | `is_active` | BOOLEAN | Active status |
+| `created_at` | TIMESTAMPTZ | Creation timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
 
 #### Tasks
 Tracks action items created from messages.
@@ -350,11 +356,16 @@ Tracks action items created from messages.
 |--------|------|-------------|
 | `id` | UUID | Primary key |
 | `message_id` | UUID | Reference to message |
+| `notion_page_id` | TEXT | Notion page ID (unique) |
+| `notion_database_id` | TEXT | Notion database ID |
 | `task_title` | TEXT | Task title |
 | `task_category` | TEXT | Category |
 | `task_priority` | TEXT | Priority level |
 | `task_status` | TEXT | Status (To Do, In Progress, Done) |
 | `due_date` | TIMESTAMPTZ | Due date/time |
+| `completed_at` | TIMESTAMPTZ | Completion timestamp |
+| `created_at` | TIMESTAMPTZ | Creation timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
 
 See `database/schema.sql` for the complete schema.
 
