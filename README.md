@@ -367,6 +367,18 @@ Tracks action items created from messages.
 | `created_at` | TIMESTAMPTZ | Creation timestamp |
 | `updated_at` | TIMESTAMPTZ | Last update timestamp |
 
+#### Feedback
+Tracks user corrections for AI learning and improvement.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `message_id` | UUID | Reference to message |
+| `original_decision` | TEXT | Original AI decision |
+| `corrected_decision` | TEXT | User's correction |
+| `user_comment` | TEXT | Optional user comment |
+| `created_at` | TIMESTAMPTZ | Creation timestamp |
+
 See `database/schema.sql` for the complete schema.
 
 ## 🔒 Security Features
