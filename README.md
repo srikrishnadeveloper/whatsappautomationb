@@ -317,44 +317,44 @@ The system supports both **Supabase (PostgreSQL)** and **Firebase Firestore**.
 #### Messages
 Stores all incoming WhatsApp messages with classification results.
 
-```sql
-- id (UUID)
-- sender (TEXT)
-- chat_name (TEXT)
-- timestamp (TIMESTAMPTZ)
-- content (TEXT)
-- message_type (TEXT)
-- classification (TEXT)
-- decision (TEXT)
-- ai_reasoning (TEXT)
-- metadata (JSONB)
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `sender` | TEXT | Message sender |
+| `chat_name` | TEXT | Chat or group name |
+| `timestamp` | TIMESTAMPTZ | Message timestamp |
+| `content` | TEXT | Message content |
+| `message_type` | TEXT | Type (text, image, video, etc.) |
+| `classification` | TEXT | AI classification result |
+| `decision` | TEXT | Action decision (create/ignore/review) |
+| `ai_reasoning` | TEXT | AI explanation |
+| `metadata` | JSONB | Additional data (attachments, etc.) |
 
 #### Rules
 Custom filtering preferences and automation rules.
 
-```sql
-- id (UUID)
-- rule_type (TEXT)
-- contact_name (TEXT)
-- keywords (TEXT[])
-- priority (TEXT)
-- category (TEXT)
-- is_active (BOOLEAN)
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `rule_type` | TEXT | Rule type (keyword, contact, group) |
+| `contact_name` | TEXT | Contact filter |
+| `keywords` | TEXT[] | Keyword array |
+| `priority` | TEXT | Priority level |
+| `category` | TEXT | Category (work, study, personal) |
+| `is_active` | BOOLEAN | Active status |
 
 #### Tasks
 Tracks action items created from messages.
 
-```sql
-- id (UUID)
-- message_id (UUID)
-- task_title (TEXT)
-- task_category (TEXT)
-- task_priority (TEXT)
-- task_status (TEXT)
-- due_date (TIMESTAMPTZ)
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `message_id` | UUID | Reference to message |
+| `task_title` | TEXT | Task title |
+| `task_category` | TEXT | Category |
+| `task_priority` | TEXT | Priority level |
+| `task_status` | TEXT | Status (To Do, In Progress, Done) |
+| `due_date` | TIMESTAMPTZ | Due date/time |
 
 See `database/schema.sql` for the complete schema.
 
