@@ -1,0 +1,76 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# WhatsApp session data (contains sensitive auth info)
+backend/_IGNORE_session/
+**/wa-task-manager.data.json
+**/_IGNORE_wa-task-manager/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# Grunt intermediate storage
+.grunt
+
+# Bower dependency directory
+bower_components
+
+# Lock files (keep yarn.lock, ignore others)
+package-lock.json
+
+# Vercel
+.vercel
+
+# Local database files
+*.sqlite
+*.db
+
+# Playwright
+.playwright-mcp/
+test-results/
+playwright-report/
+playwright/.cache/

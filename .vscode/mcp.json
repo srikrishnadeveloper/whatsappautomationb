@@ -1,0 +1,17 @@
+{
+	// Project-level MCP config for the WhatsApp Automation workspace.
+	// Supabase is also configured globally in VS Code user settings.
+	"servers": {
+		"supabase": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"-y",
+				"@supabase/mcp-server-supabase@latest"
+			],
+			"env": {
+				"SUPABASE_ACCESS_TOKEN": "sbp_7f7958c2da17363f75a4892cd4ac7e709acd3216"
+			}
+		}
+	}
+}
