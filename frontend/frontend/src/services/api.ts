@@ -41,9 +41,10 @@ export function getAccessToken(): string | null {
 
 // Helper for authenticated fetch
 export async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const authHeaders = getAuthHeaders();
   const headers = {
-    ...options.headers,
-    ...getAuthHeaders()
+    ...authHeaders,       // default auth headers first
+    ...options.headers,   // explicit headers override (e.g. fresh token after OAuth)
   };
   return fetch(url, { ...options, headers });
 }

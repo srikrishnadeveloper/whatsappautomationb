@@ -5,11 +5,15 @@
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import log from './activity-log';
+import { initMLClassifier, classifyWithML, isMLClassifierReady, getMLClassifierStatus } from '../classifier/ml';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
 
 let genAI: GoogleGenerativeAI | null = null;
 let model: any = null;
+
+// Stats tracking
+let mlCallCount = 0;
 
 // Initialize Gemini
 export function initGemini() {
@@ -53,8 +57,56 @@ export interface ClassificationResult {
 
 // Classify message with AI
 export async function classifyWithAI(content: string, sender: string): Promise<ClassificationResult> {
-  // If no AI available, use rule-based
+  // ---- STEP 1: Try ML classifier (free, fast, ~97% accuracy) ----
+  if (isMLClassifierReady()) {
+    const mlResult = classifyWithML(content);
+    if (mlResult && mlResult.confidence >= 0.65) {
+      mlCallCount++;
+      const categoryMap: Record<string, ClassificationResult['category']> = {
+        'work': 'work', 'study': 'study', 'personal': 'personal', 'ignore': 'casual',
+      };
+      const priorityMap: Record<string, ClassificationResult['priority']> = {
+        'urgent': 'high', 'high': 'high', 'medium': 'medium', 'low': 'low',
+      };
+      const mlCategory = categoryMap[mlResult.category] || 'casual';
+      const mlPriority = priorityMap[mlResult.priority] || 'low';
+      const mlDecision = mlResult.has_action_verb || mlResult.has_deadline
+        ? 'create' as const
+        : mlResult.confidence >= 0.8
+          ? (mlResult.category === 'ignore' ? 'ignore' as const : 'create' as const)
+          : 'review' as const;
+
+      log.info('ML Classification',
+        `${mlCategory} | ${mlPriority} | ${mlDecision} | conf=${mlResult.confidence.toFixed(2)} | ${mlResult.inference_time_ms}ms [ML #${mlCallCount}]`);
+
+      return {
+        category: mlCategory,
+        priority: mlDecision === 'ignore' ? 'none' : mlPriority,
+        decision: mlDecision,
+        reasoning: `ML model (${mlResult.confidence.toFixed(2)}): ${mlResult.keywords_matched.slice(0, 5).join(', ') || 'pattern match'}`,
+        suggestedTask: mlDecision === 'create' ? content.slice(0, 80) : undefined,
+        deadline: mlResult.has_deadline ? 'detected' : undefined,
+        actionItems: [],
+      };
+    }
+  }
+
+  // ---- STEP 2: If no AI available, use ML or rule-based ----
   if (!model) {
+    // Try ML fallback if it didn't pass confidence threshold above
+    if (isMLClassifierReady()) {
+      const mlFallback = classifyWithML(content);
+      if (mlFallback) {
+        mlCallCount++;
+        return {
+          category: mlFallback.category === 'ignore' ? 'casual' : mlFallback.category as any,
+          priority: 'low',
+          decision: 'review',
+          reasoning: `ML fallback (no Gemini, conf=${mlFallback.confidence.toFixed(2)})`,
+          actionItems: [],
+        };
+      }
+    }
     return classifyWithRules(content);
   }
 
@@ -216,5 +268,8 @@ export function classifyWithRules(content: string): ClassificationResult {
     reasoning: 'No specific keywords matched'
   };
 }
+
+// Initialize ML classifier (call at startup)
+export { initMLClassifier } from '../classifier/ml';
 
 export default { initGemini, classifyWithAI, classifyWithRules };

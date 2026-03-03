@@ -11,8 +11,6 @@ import {
   Menu, 
   Smartphone,
   CheckSquare,
-  Moon,
-  Sun,
   LogOut,
   ChevronDown,
   Search
@@ -23,12 +21,12 @@ import { useAuth } from '../context/AuthContext'
 import { API_BASE, authFetch, authSSEUrl } from '../services/api'
 
 const navigation = [
-  { name: 'Inbox', href: '/dashboard', icon: Inbox },
-  { name: 'Tasks', href: '/tasks', icon: CheckSquare },
-  { name: 'AI Search', href: '/search', icon: Search },
-  { name: 'Summary', href: '/summary', icon: FileText },
-  { name: 'Connect WhatsApp', href: '/', icon: Smartphone },
-  { name: 'Settings', href: '/settings', icon: Settings },
+  { name: 'Inbox',           href: '/dashboard', icon: Inbox },
+  { name: 'Tasks',           href: '/tasks',     icon: CheckSquare },
+  { name: 'AI Search',       href: '/search',    icon: Search },
+  { name: 'Summary',         href: '/summary',   icon: FileText },
+  { name: 'Connect WhatsApp', href: '/',          icon: Smartphone },
+  { name: 'Settings',        href: '/settings',  icon: Settings },
 ]
 
 interface WhatsAppStatus {
@@ -39,7 +37,6 @@ interface WhatsAppStatus {
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [darkMode, setDarkMode] = useState(false)
   const [waStatus, setWaStatus] = useState<WhatsAppStatus>({ 
     status: 'disconnected', 
     messagesProcessed: 0 
@@ -51,19 +48,6 @@ export default function Layout() {
   const handleLogout = async () => {
     await logout()
     navigate('/login')
-  }
-
-  useEffect(() => {
-    const isDark = localStorage.getItem('darkMode') === 'true'
-    setDarkMode(isDark)
-    document.documentElement.classList.toggle('dark', isDark)
-  }, [])
-
-  const toggleDarkMode = () => {
-    const newMode = !darkMode
-    setDarkMode(newMode)
-    localStorage.setItem('darkMode', String(newMode))
-    document.documentElement.classList.toggle('dark', newMode)
   }
 
   useEffect(() => {
@@ -132,7 +116,7 @@ export default function Layout() {
             Menu
           </div>
           {navigation.map((item) => {
-            const isActive = location.pathname === item.href
+            const isItemActive = location.pathname === item.href
             return (
               <NavLink
                 key={item.name}
@@ -147,7 +131,7 @@ export default function Layout() {
               >
                 <item.icon className={clsx(
                   "w-[18px] h-[18px] transition-colors",
-                  isActive ? "text-[var(--accent-primary)]" : "text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]"
+                  isItemActive ? "text-[var(--accent-primary)]" : "text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]"
                 )} />
                 <span>{item.name}</span>
                 {item.name === 'Connect WhatsApp' && isConnected && (
@@ -177,17 +161,10 @@ export default function Layout() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-2 mt-2">
-            <button
-              onClick={toggleDarkMode}
-              className="flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-[var(--text-secondary)] bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-md hover:bg-[var(--bg-surface-soft)] hover:text-[var(--text-primary)] transition-all"
-            >
-              {darkMode ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-              {darkMode ? 'Light' : 'Dark'}
-            </button>
+          <div className="mt-2">
             <button
               onClick={handleLogout}
-              className="flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-red-600 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-md hover:bg-red-50 hover:border-red-100 transition-all"
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-red-600 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-md hover:bg-red-50 hover:border-red-100 transition-all"
             >
               <LogOut className="w-3.5 h-3.5" />
               Logout

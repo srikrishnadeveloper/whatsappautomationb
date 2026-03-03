@@ -28,6 +28,7 @@ import authRouter from './routes/auth-firebase'; // Firebase Auth Routes
 // Import WhatsApp service
 import { startWhatsApp, stopWhatsApp, logoutWhatsApp } from './services/whatsapp-integrated';
 import log from './services/activity-log';
+import { initMLClassifier } from './classifier/ml';
 
 // Wire up WhatsApp functions to routes
 setWhatsAppFunctions(startWhatsApp, stopWhatsApp, logoutWhatsApp);
@@ -128,6 +129,18 @@ app.listen(PORT, async () => {
   console.log('  GET  /api/actions     - Action items');
   console.log('  GET  /api/whatsapp/*  - WhatsApp status & control');
   console.log('');
+
+  // Initialize ML classifier
+  try {
+    const mlOk = await initMLClassifier();
+    if (mlOk) {
+      log.success('ML Classifier Ready', 'Naive Bayes model loaded — free, fast, ~97% accuracy');
+    } else {
+      log.warning('ML Classifier Not Available', "Run 'npx ts-node src/classifier/ml/train.ts' to train");
+    }
+  } catch (err: any) {
+    log.warning('ML Classifier Init Failed', err.message);
+  }
 
   // Auto-start WhatsApp if enabled
   if (AUTO_START_WHATSAPP) {

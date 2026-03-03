@@ -38,6 +38,7 @@ function App() {
             <Route path="tasks" element={<Tasks />} />
             <Route path="actions" element={<ActionItems />} />
             <Route path="search" element={<Search />} />
+            <Route path="gmail" element={<Dashboard />} />
             <Route path="summary" element={<Summary />} />
             <Route path="settings" element={<Settings />} />
           </Route>

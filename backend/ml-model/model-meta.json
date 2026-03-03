@@ -1,0 +1,23 @@
+{
+  "trainedAt": "2026-03-02T14:42:58.632Z",
+  "samplesPerCategory": 500,
+  "totalTrainingSamples": 1912,
+  "validationSamples": 338,
+  "categoryAccuracy": 96.7,
+  "priorityAccuracy": 71,
+  "trainingTimeMs": 251,
+  "method": "naive-bayes",
+  "library": "natural",
+  "categories": [
+    "work",
+    "study",
+    "personal",
+    "ignore"
+  ],
+  "priorities": [
+    "urgent",
+    "high",
+    "medium",
+    "low"
+  ]
+}

@@ -59,6 +59,21 @@ export function getSupabaseClient(): SupabaseClient {
   return client;
 }
 
+/**
+ * Create a per-request authenticated Supabase client using a user's JWT.
+ * This ensures RLS policies see auth.uid() correctly for the authenticated role.
+ * Use this when making DB queries on behalf of a specific user.
+ */
+export function createAuthenticatedClient(jwt: string): SupabaseClient {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('Supabase not configured');
+  }
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${jwt}` } },
+  });
+}
+
 // Database types matching Supabase schema
 export interface DbMessage {
   id?: string;

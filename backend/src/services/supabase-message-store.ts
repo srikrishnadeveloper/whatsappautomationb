@@ -4,16 +4,16 @@
  * Every operation requires a userId for data isolation
  */
 
-import { getSupabaseClient } from '../config/supabase';
+import { getSupabaseClient, createAuthenticatedClient } from '../config/supabase';
 import { StoredMessage } from './message-store';
 
 class SupabaseMessageStore {
-  private get db() {
-    return getSupabaseClient();
+  private getDb(jwt?: string) {
+    return jwt ? createAuthenticatedClient(jwt) : getSupabaseClient();
   }
 
-  // Add a message (userId required)
-  async add(message: Omit<StoredMessage, 'id' | 'created_at'>, userId: string): Promise<StoredMessage> {
+  // Add a message (userId required, jwt enables RLS-passing writes)
+  async add(message: Omit<StoredMessage, 'id' | 'created_at'>, userId: string, jwt?: string): Promise<StoredMessage> {
     const row = {
       user_id: userId,
       sender: message.sender,
@@ -28,7 +28,7 @@ class SupabaseMessageStore {
       metadata: message.metadata || null,
     };
 
-    const { data, error } = await this.db
+    const { data, error } = await this.getDb(jwt)
       .from('messages')
       .insert(row)
       .select()
@@ -40,8 +40,8 @@ class SupabaseMessageStore {
   }
 
   // Get a single message
-  async get(id: string, userId?: string): Promise<StoredMessage | undefined> {
-    let query = this.db.from('messages').select('*').eq('id', id);
+  async get(id: string, userId?: string, jwt?: string): Promise<StoredMessage | undefined> {
+    let query = this.getDb(jwt).from('messages').select('*').eq('id', id);
     if (userId) query = query.eq('user_id', userId);
 
     const { data, error } = await query.single();
@@ -58,12 +58,13 @@ class SupabaseMessageStore {
     limit?: number;
     offset?: number;
     userId?: string;
+    jwt?: string;
   }): Promise<{ data: StoredMessage[]; total: number }> {
     const limit = filters?.limit || 50;
     const offset = filters?.offset || 0;
 
     // Build count query
-    let countQuery = this.db.from('messages').select('*', { count: 'exact', head: true });
+    let countQuery = this.getDb(filters?.jwt).from('messages').select('*', { count: 'exact', head: true });
     if (filters?.userId) countQuery = countQuery.eq('user_id', filters.userId);
     if (filters?.classification) countQuery = countQuery.eq('classification', filters.classification);
     if (filters?.decision) countQuery = countQuery.eq('decision', filters.decision);
@@ -75,7 +76,7 @@ class SupabaseMessageStore {
     const { count } = await countQuery;
 
     // Build data query
-    let query = this.db
+    let query = this.getDb(filters?.jwt)
       .from('messages')
       .select('*')
       .order('created_at', { ascending: false })
@@ -99,7 +100,7 @@ class SupabaseMessageStore {
   }
 
   // Update a message
-  async update(id: string, updates: Partial<StoredMessage>, userId?: string): Promise<StoredMessage | null> {
+  async update(id: string, updates: Partial<StoredMessage>, userId?: string, jwt?: string): Promise<StoredMessage | null> {
     const updateData: any = {};
     if (updates.classification !== undefined) updateData.classification = updates.classification;
     if (updates.decision !== undefined) updateData.decision = updates.decision;
@@ -108,7 +109,7 @@ class SupabaseMessageStore {
     if (updates.metadata !== undefined) updateData.metadata = updates.metadata;
     updateData.updated_at = new Date().toISOString();
 
-    let query = this.db.from('messages').update(updateData).eq('id', id);
+    let query = this.getDb(jwt).from('messages').update(updateData).eq('id', id);
     if (userId) query = query.eq('user_id', userId);
 
     const { data, error } = await query.select().single();
@@ -117,8 +118,8 @@ class SupabaseMessageStore {
   }
 
   // Delete a message
-  async delete(id: string, userId?: string): Promise<boolean> {
-    let query = this.db.from('messages').delete().eq('id', id);
+  async delete(id: string, userId?: string, jwt?: string): Promise<boolean> {
+    let query = this.getDb(jwt).from('messages').delete().eq('id', id);
     if (userId) query = query.eq('user_id', userId);
 
     const { error, count } = await query;
@@ -126,8 +127,8 @@ class SupabaseMessageStore {
   }
 
   // Check if a message with given messageKey already exists (dedup)
-  async existsByMessageKey(messageKey: string, userId?: string): Promise<boolean> {
-    let query = this.db
+  async existsByMessageKey(messageKey: string, userId?: string, jwt?: string): Promise<boolean> {
+    let query = this.getDb(jwt)
       .from('messages')
       .select('id', { count: 'exact', head: true })
       .contains('metadata', { messageKey });
@@ -139,7 +140,7 @@ class SupabaseMessageStore {
   }
 
   // Get statistics for a user
-  async getStats(userId?: string): Promise<{
+  async getStats(userId?: string, jwt?: string): Promise<{
     overview: {
       total_messages: number;
       recent_24h: number;
@@ -150,7 +151,7 @@ class SupabaseMessageStore {
     by_decision: Record<string, number>;
     by_priority: Record<string, number>;
   }> {
-    let query = this.db.from('messages').select('classification, decision, priority, created_at');
+    let query = this.getDb(jwt).from('messages').select('classification, decision, priority, created_at');
     if (userId) query = query.eq('user_id', userId);
 
     const { data, error } = await query;
@@ -197,14 +198,14 @@ class SupabaseMessageStore {
   }
 
   // Clear all messages for a specific user only
-  async clear(userId: string): Promise<void> {
-    const { error } = await this.db.from('messages').delete().eq('user_id', userId);
+  async clear(userId: string, jwt?: string): Promise<void> {
+    const { error } = await this.getDb(jwt).from('messages').delete().eq('user_id', userId);
     if (error) throw new Error(`Clear failed: ${error.message}`);
   }
 
   // Count all messages for a user
-  async count(userId: string): Promise<number> {
-    const { count } = await this.db
+  async count(userId: string, jwt?: string): Promise<number> {
+    const { count } = await this.getDb(jwt)
       .from('messages')
       .select('*', { count: 'exact', head: true })
       .eq('user_id', userId);

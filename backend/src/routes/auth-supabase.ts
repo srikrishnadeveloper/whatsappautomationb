@@ -288,19 +288,24 @@ router.put('/profile', requireAuth, async (req: Request, res: Response) => {
 // DELETE /api/auth/account — Delete account (requires auth)
 router.delete('/account', requireAuth, async (req: Request, res: Response) => {
   try {
+    const userId = req.userId!;
     const db = supabaseAdmin || getSupabaseClient();
 
-    // Delete profile and cascade
-    await db.from('profiles').delete().eq('id', req.userId!);
+    // Wipe all user data
+    await db.from('messages').delete().eq('user_id', userId);
+    await db.from('action_items').delete().eq('user_id', userId);
+    try { await db.from('gmail_messages').delete().eq('user_id', userId); } catch { /* table may not exist */ }
+    try { await db.from('gmail_tokens').delete().eq('user_id', userId); } catch { /* table may not exist */ }
+    await db.from('profiles').delete().eq('id', userId);
 
     // Delete auth user (requires admin client)
     if (supabaseAdmin) {
-      await supabaseAdmin.auth.admin.deleteUser(req.userId!);
+      await supabaseAdmin.auth.admin.deleteUser(userId);
     }
 
     res.json({ success: true, message: 'Account deleted' });
   } catch (err: any) {
-    res.status(500).json({ error: true, message: 'Account deletion failed' });
+    res.status(500).json({ error: true, message: 'Account deletion failed: ' + err.message });
   }
 });
 

@@ -8,56 +8,8 @@ import { supabase } from '../config/supabase';
 
 const router = Router();
 
-// POST /api/auth/register - Register a new user
-router.post('/register', async (req: Request, res: Response) => {
-  try {
-    const { email, password, fullName } = req.body;
+// Registration endpoint removed: Only Google sign-in is supported
 
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: 'Email and password are required'
-      });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({
-        success: false,
-        error: 'Password must be at least 6 characters'
-      });
-    }
-
-    if (!supabase) {
-      return res.status(503).json({
-        success: false,
-        error: 'Database not configured'
-      });
-    }
-
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: fullName || ''
-        }
-      }
-    });
-
-    if (error) {
-      console.error('Supabase auth error:', error);
-      return res.status(400).json({
-        success: false,
-        error: error.message,
-        details: error
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Registration successful. Please check your email to verify your account.',
-      data: {
-        user: data.user ? {
           id: data.user.id,
           email: data.user.email,
           emailConfirmed: data.user.email_confirmed_at !== null
@@ -78,46 +30,8 @@ router.post('/register', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/auth/login - Login user
-router.post('/login', async (req: Request, res: Response) => {
-  try {
-    const { email, password } = req.body;
+// Login endpoint removed: Only Google sign-in is supported
 
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: 'Email and password are required'
-      });
-    }
-
-    if (!supabase) {
-      return res.status(503).json({
-        success: false,
-        error: 'Database not configured'
-      });
-    }
-
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    });
-
-    if (error) {
-      return res.status(401).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Login successful',
-      data: {
-        user: {
-          id: data.user.id,
-          email: data.user.email,
-          fullName: data.user.user_metadata?.full_name || '',
-          emailConfirmed: data.user.email_confirmed_at !== null
         },
         session: {
           accessToken: data.session.access_token,
@@ -343,81 +257,8 @@ router.put('/user', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/auth/reset-password - Request password reset
-router.post('/reset-password', async (req: Request, res: Response) => {
-  try {
-    const { email } = req.body;
+// Password reset and update endpoints removed: Only Google sign-in is supported
 
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        error: 'Email is required'
-      });
-    }
-
-    if (!supabase) {
-      return res.status(503).json({
-        success: false,
-        error: 'Database not configured'
-      });
-    }
-
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password`
-    });
-
-    if (error) {
-      return res.status(400).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Password reset email sent'
-    });
-  } catch (error: any) {
-    console.error('Reset password error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to send reset email'
-    });
-  }
-});
-
-// POST /api/auth/update-password - Update password (after reset)
-router.post('/update-password', async (req: Request, res: Response) => {
-  try {
-    const authHeader = req.headers.authorization;
-    const { password } = req.body;
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        error: 'No authorization token provided'
-      });
-    }
-
-    if (!password || password.length < 6) {
-      return res.status(400).json({
-        success: false,
-        error: 'Password must be at least 6 characters'
-      });
-    }
-
-    if (!supabase) {
-      return res.status(503).json({
-        success: false,
-        error: 'Database not configured'
-      });
-    }
-
-    const { error } = await supabase.auth.updateUser({
-      password
-    });
-
-    if (error) {
       return res.status(400).json({
         success: false,
         error: error.message

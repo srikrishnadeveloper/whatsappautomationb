@@ -1,8 +1,14 @@
 /**
  * AI-Powered Search Service
- * Uses Gemini AI to search through messages and find relevant information
+ * Uses Gemini AI to search through messages and find relevant information.
+ *
+ * Token-saving strategy (reduces AI usage ~80%):
+ *  1. Keyword pre-filter: score all messages locally, take top 60 most relevant.
+ *  2. Content truncation: send only the first 150 chars of each message.
+ *  3. Response cache: identical queries within 5 minutes reuse the last result.
  */
 
+import { createHash } from 'crypto';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import log from './activity-log';
 
@@ -10,6 +16,71 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_K
 
 let genAI: GoogleGenerativeAI | null = null;
 let model: any = null;
+
+// ── Response cache ──────────────────────────────────────────────────────────
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+interface CacheEntry { result: AISearchResponse; expiresAt: number; }
+const queryCache = new Map<string, CacheEntry>();
+
+function cacheKey(query: string, messageCount: number): string {
+  return createHash('md5').update(`${query}:${messageCount}`).digest('hex');
+}
+
+function getCached(key: string): AISearchResponse | null {
+  const entry = queryCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { queryCache.delete(key); return null; }
+  return entry.result;
+}
+
+function setCached(key: string, result: AISearchResponse): void {
+  // Evict old entries whenever cache grows beyond 50 items
+  if (queryCache.size >= 50) {
+    const oldest = queryCache.keys().next().value;
+    if (oldest) queryCache.delete(oldest);
+  }
+  queryCache.set(key, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
+// ── Local keyword pre-filter ──────────────────────────────────────────────
+/**
+ * Score messages locally by query keyword overlap.
+ * Returns the top `limit` messages, sorted by relevance descending.
+ */
+function preFilterMessages(
+  query: string,
+  messages: MessageData[],
+  limit: number = 60
+): MessageData[] {
+  const terms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(t => t.length >= 2); // include short words for names/jargon
+
+  if (terms.length === 0) return messages.slice(0, limit);
+
+  const scored = messages.map(m => {
+    const text = `${m.sender} ${m.chat_name ?? ''} ${m.content}`.toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      // Exact term hits
+      const idx = text.indexOf(term);
+      if (idx !== -1) {
+        score += term.length; // Longer term matches score more
+        // Bonus: match in sender/chat name is more significant
+        const meta = `${m.sender} ${m.chat_name ?? ''}`.toLowerCase();
+        if (meta.includes(term)) score += 4;
+      }
+    }
+    return { msg: m, score };
+  });
+
+  return scored
+    .filter(s => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(s => s.msg);
+}
 
 // Initialize Gemini for search
 export function initSearchAI() {
@@ -80,18 +151,29 @@ export async function aiSearch(
     return fallbackSearch(query, messages);
   }
 
+  // ── Cache check ──────────────────────────────────────────────────────────
+  const ck = cacheKey(query, messages.length);
+  const cached = getCached(ck);
+  if (cached) {
+    log.info('AI Search (cache hit)', `"${query.slice(0, 40)}"`);
+    return cached;
+  }
+
   try {
-    // Prepare message context for AI (limit to recent 500 messages to avoid token limits)
-    const recentMessages = messages.slice(0, 500);
-    const messageContext = recentMessages.map((m, i) => 
-      `[${i}] From: ${m.sender} | Chat: ${m.chat_name || 'Unknown'} | Time: ${m.timestamp}\n${m.content}`
+    // ── Pre-filter: pick the 60 most keyword-relevant messages ────────────
+    const candidateMessages = preFilterMessages(query, messages, 60);
+    if (candidateMessages.length === 0) return fallbackSearch(query, messages);
+
+    // ── Truncate content to 150 chars each — cuts tokens dramatically ─────
+    const messageContext = candidateMessages.map((m, i) =>
+      `[${i}] ${m.sender}|${m.chat_name || '?'}|${m.timestamp.slice(0, 10)}\n${m.content.slice(0, 150)}`
     ).join('\n---\n');
 
-    const prompt = `You are an intelligent search assistant analyzing WhatsApp messages. 
+    const prompt = `You are a search assistant for WhatsApp messages.
 
-USER QUERY: "${query}"
+QUERY: "${query}"
 
-MESSAGES TO SEARCH:
+MESSAGES (${candidateMessages.length} most relevant):
 ${messageContext}
 
 Analyze the query and find ALL relevant messages. For queries about meetings, calls, appointments, or interactions with specific people, find ALL related messages.
@@ -114,8 +196,8 @@ Respond in this exact JSON format:
 Be thorough - if the user asks about meetings with someone, find ALL messages mentioning that person or related discussions.`;
 
     const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
+    const geminiResponse = await result.response;
+    const text = geminiResponse.text();
 
     // Parse JSON from response
     const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -128,30 +210,34 @@ Be thorough - if the user asks about meetings with someone, find ALL messages me
 
     // Build search results from matching indices
     const results: SearchResult[] = (parsed.matchingMessageIndices || [])
-      .filter((i: number) => i >= 0 && i < recentMessages.length)
+      .filter((i: number) => i >= 0 && i < candidateMessages.length)
       .map((i: number) => {
-        const msg = recentMessages[i];
+        const msg = candidateMessages[i];
         return {
           messageId: msg.id,
           sender: msg.sender,
           chatName: msg.chat_name || 'Unknown',
-          content: msg.content,
+          content: msg.content,           // Return full content in results
           timestamp: msg.timestamp,
-          relevanceScore: 1 - (i * 0.01), // Higher score for earlier matches
+          relevanceScore: 1 - (i * 0.01),
           matchReason: parsed.matchReasons?.[String(i)] || 'Matches query',
-          extractedInfo: parsed.extractedInfo
+          extractedInfo: parsed.extractedInfo,
         };
       });
 
-    log.info('AI Search completed', `Found ${results.length} results for: "${query}"`);
+    log.info('AI Search completed',
+      `Found ${results.length} results for: "${query}" (pre-filtered ${messages.length}→${candidateMessages.length})`);
 
-    return {
+    const response: AISearchResponse = {
       query,
       answer: parsed.answer || 'No specific answer found.',
       results,
       summary: parsed.summary || `Found ${results.length} matching messages.`,
-      suggestedFollowUps: parsed.suggestedFollowUps || []
+      suggestedFollowUps: parsed.suggestedFollowUps || [],
     };
+
+    setCached(ck, response);
+    return response;
 
   } catch (error: any) {
     log.error('AI Search failed', error.message);

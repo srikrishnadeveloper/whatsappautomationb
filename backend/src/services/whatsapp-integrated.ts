@@ -14,7 +14,8 @@ import makeWASocket, {
   BufferJSON,
   initAuthCreds,
   AuthenticationCreds,
-  SignalDataTypeMap
+  SignalDataTypeMap,
+  downloadMediaMessage
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
@@ -22,16 +23,141 @@ import pino from 'pino';
 import { updateWhatsAppState, getWhatsAppState } from '../routes/whatsapp';
 import { hybridMessageStore } from './hybrid-message-store';
 import { hybridActionItems } from './hybrid-action-items';
-import { classifyWithAI, initGemini } from './ai-classifier';
+import { classifyWithAI, initGemini, analyzeImageWithGemini } from './ai-classifier';
+import { isSenderBlocked } from './privacy-settings';
 import { useSupabaseAuthState } from './supabase-auth-state';
 import log from './activity-log';
+import clog from './console-logger';
 import { systemState } from './system-state';
+import * as fs from 'fs';
+import * as path from 'path';
 
-// Track the session owner's authenticated userId (from Supabase auth)
-export let sessionOwnerId: string | null = null;
+// ── Session persistence ──────────────────────────────────────────────────────
+const SESSION_DIR = path.join(__dirname, '../../_IGNORE_session');
+const SESSION_OWNER_FILE = path.join(SESSION_DIR, 'session-owner.json');
 
-export function setSessionOwner(userId: string) {
+/**
+ * Persist current session state to disk.
+ * `baileysDir` = the UUID directory that holds Baileys creds (may differ from dataOwner).
+ * `dataOwner` = the authenticated user's UUID for saving messages.
+ */
+function persistSessionState(data: { dataOwner?: string; baileysDir?: string }) {
+  try {
+    if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+    let existing: any = {};
+    if (fs.existsSync(SESSION_OWNER_FILE)) {
+      existing = JSON.parse(fs.readFileSync(SESSION_OWNER_FILE, 'utf-8'));
+    }
+    const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    fs.writeFileSync(SESSION_OWNER_FILE, JSON.stringify(merged));
+  } catch (err: any) {
+    console.error('Failed to persist session state:', err.message);
+  }
+}
+
+/**
+ * Find the Baileys credentials directory by scanning for UUID-named dirs with creds.json.
+ */
+function detectBaileysSessionDir(): string | null {
+  try {
+    if (!fs.existsSync(SESSION_DIR)) return null;
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const entries = fs.readdirSync(SESSION_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && UUID_RE.test(entry.name)) {
+        const credsPath = path.join(SESSION_DIR, entry.name, 'creds.json');
+        if (fs.existsSync(credsPath)) {
+          return entry.name;
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Load persisted session state from disk.
+ * Returns { dataOwner, baileysDir } — either may be null.
+ */
+function loadPersistedSession(): { dataOwner: string | null; baileysDir: string | null } {
+  let dataOwner: string | null = null;
+  let baileysDir: string | null = null;
+
+  try {
+    if (fs.existsSync(SESSION_OWNER_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SESSION_OWNER_FILE, 'utf-8'));
+      dataOwner = data?.dataOwner || data?.userId || null; // backward compat
+      baileysDir = data?.baileysDir || null;
+    }
+  } catch {}
+
+  // Always auto-detect Baileys dir from actual creds on disk
+  const detectedDir = detectBaileysSessionDir();
+  if (detectedDir) {
+    baileysDir = detectedDir;
+  }
+
+  if (dataOwner) console.log(`📂 Restored data owner: ${dataOwner}`);
+  if (baileysDir) console.log(`📂 Baileys session dir: ${baileysDir}`);
+
+  return { dataOwner, baileysDir };
+}
+
+const persistedSession = loadPersistedSession();
+
+// ── Session owner tracking ───────────────────────────────────────────────────
+// `sessionOwnerId` = The authenticated user's UUID for saving messages to Supabase.
+//   This is the currently logged-in user's ID. It changes when a different user logs in.
+// `baileysSessionDir` = The directory containing Baileys WhatsApp creds (encryption keys etc.)
+//   This stays the same regardless of which Supabase user is logged in.
+export let sessionOwnerId: string | null = persistedSession.dataOwner;
+export let sessionOwnerJwt: string | null = null;
+let baileysSessionDir: string | null = persistedSession.baileysDir;
+
+export function setSessionOwner(userId: string, jwt?: string) {
   sessionOwnerId = userId;
+  // If no Baileys creds directory yet, use the new owner's UUID
+  // (for fresh QR scans). Existing creds dirs are preserved.
+  if (!baileysSessionDir) {
+    baileysSessionDir = userId;
+    persistSessionState({ dataOwner: userId, baileysDir: userId });
+  } else {
+    persistSessionState({ dataOwner: userId });
+  }
+  if (jwt) sessionOwnerJwt = jwt;
+}
+
+/** Get the Baileys session directory name (UUID or 'default'). */
+export function getBaileysSessionDir(): string {
+  return baileysSessionDir || sessionOwnerId || 'default';
+}
+
+/**
+ * Refresh the stored session JWT (called from auth middleware on every request).
+ * Always adopts the currently authenticated user as the data owner so that
+ * Supabase writes use the correct user_id + JWT, regardless of which account
+ * originally created the WhatsApp session.
+ */
+export function refreshSessionJwt(userId: string, jwt: string) {
+  if (!jwt) return;
+
+  const hadNoJwt = !sessionOwnerJwt;
+  const ownerChanged = sessionOwnerId !== userId;
+
+  if (ownerChanged) {
+    console.log(`🔄 Session data owner changed: ${sessionOwnerId} → ${userId}`);
+    sessionOwnerId = userId;
+    persistSessionState({ dataOwner: userId });
+  }
+
+  sessionOwnerJwt = jwt;
+
+  // First JWT after server auto-start → flush pending in-memory data
+  if (hadNoJwt) {
+    hybridMessageStore.flushInMemoryToSupabase(userId, jwt).catch(err =>
+      console.error('⚠️ In-memory flush failed:', err.message)
+    );
+  }
 }
 
 export function getSessionOwner(): string | null {
@@ -53,6 +179,17 @@ function startSelfPing() {
     }
   }, 14 * 60 * 1000); // 14 minutes
   console.log('🏓 Self-ping started (14 min interval)');
+
+  // ── Watchdog: auto-reconnect if disconnected for >90 seconds ──
+  setInterval(() => {
+    const state = getWhatsAppState();
+    if (state.status !== 'connected' && state.status !== 'qr_ready' &&
+        state.status !== 'initializing' && state.status !== 'connecting' &&
+        connectionPhase !== 'starting' && connectionPhase !== 'reconnecting') {
+      console.log('🐕 Watchdog: detected idle disconnect — auto-reconnecting...');
+      startWhatsApp(false).catch(() => {});
+    }
+  }, 90000); // check every 90 seconds
 }
 
 function stopSelfPing() {
@@ -89,15 +226,47 @@ let qrExpiryTimeout: ReturnType<typeof setTimeout> | null = null; // Track QR ex
 
 const QR_TIMEOUT_MS = 300000; // QR code valid for 300 seconds (5 minutes)
 const MAX_QR_RETRIES = 30; // Maximum QR regenerations before giving up
-const MIN_RECONNECT_DELAY = 30000; // Minimum 30 seconds between reconnect attempts (for normal reconnects)
+const MIN_RECONNECT_DELAY = 8000;  // 8 s between reconnect attempts
 const MIN_QR_RECONNECT_DELAY = 2000; // Minimum 2 seconds for QR-phase reconnects
-const MIN_QR_REGENERATION_DELAY = 120000; // Minimum 2 minutes between QR regenerations
-const MAX_RECONNECT_ATTEMPTS = 10; // Maximum consecutive reconnect attempts before resetting
-const RECONNECT_BACKOFF_BASE = 5000; // Base delay for exponential backoff
+const MIN_QR_REGENERATION_DELAY = 60000; // 1 minute between QR regenerations (was 2)
+const MAX_RECONNECT_ATTEMPTS = 20; // More attempts before resetting (was 10)
+const RECONNECT_BACKOFF_BASE = 3000; // Faster base delay (was 5000)
 
 // In-memory cache for processed message IDs to prevent duplicates efficiently
 const processedMessageIds = new Set<string>();
 const MAX_PROCESSED_CACHE = 5000; // Keep last 5000 message IDs in memory
+
+// ── In-memory media buffer cache ────────────────────────────────────────────
+// Stores downloaded media buffers keyed by WhatsApp message key ID.
+// Allows the frontend to download media via /api/whatsapp/media/:key endpoint.
+// Capped at 200 entries; oldest evicted when full.
+export interface MediaCacheEntry {
+  buffer: Buffer;
+  mimeType: string;
+  fileName: string;
+  size: number;
+  cachedAt: number;    // Date.now()
+  mediaType: 'image' | 'video' | 'audio' | 'sticker' | 'document';
+}
+const mediaCache = new Map<string, MediaCacheEntry>();
+const MAX_MEDIA_CACHE = 200;
+
+function addToMediaCache(key: string, entry: MediaCacheEntry) {
+  // Evict oldest entries if we're at capacity
+  if (mediaCache.size >= MAX_MEDIA_CACHE) {
+    const oldest = [...mediaCache.entries()].sort((a, b) => a[1].cachedAt - b[1].cachedAt)[0];
+    if (oldest) mediaCache.delete(oldest[0]);
+  }
+  mediaCache.set(key, entry);
+}
+
+export function getMediaFromCache(messageKey: string): MediaCacheEntry | null {
+  return mediaCache.get(messageKey) || null;
+}
+
+export function listMediaCacheKeys(): string[] {
+  return [...mediaCache.keys()];
+}
 
 // ---- MISSED MESSAGE CATCH-UP STATE ----
 /** Boundary timestamp: messages with ts > this are "missed" and must be processed */
@@ -240,11 +409,17 @@ async function processMissedMessages(offlineSince: Date): Promise<number> {
 }
 
 /**
- * Get the current user's phone number for associating data
+ * Get the current user's Supabase UUID for associating data.
+ * Returns empty string when no session owner is set, which causes the
+ * hybrid store to fall back to in-memory storage instead of sending a
+ * phone number to the UUID column and crashing.
  */
 function getCurrentUserId(): string {
-  const user = whatsappSocket?.user;
-  return user?.id?.split(':')[0] || 'unknown';
+  // Only return the Supabase UUID — never a phone number
+  if (sessionOwnerId) return sessionOwnerId;
+  // No session owner → return empty so hybrid store uses in-memory
+  console.warn('⚠️ No session owner UUID set — message will be stored in-memory until user authenticates');
+  return '';
 }
 
 // Store user's own sent message (for context, without classification)
@@ -277,7 +452,7 @@ async function storeOwnMessage(msg: proto.IWebMessageInfo, userId: string): Prom
     };
 
     // Store using hybrid store with userId
-    const stored = await hybridMessageStore.add(messageData, userId);
+    const stored = await hybridMessageStore.add(messageData, userId, sessionOwnerJwt ?? undefined);
     return stored.id;
   } catch (error: any) {
     log.error('Store own message failed', error.message);
@@ -290,18 +465,152 @@ async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> 
   const userId = getCurrentUserId();
   
   try {
-    const content = msg.message?.conversation || 
-                    msg.message?.extendedTextMessage?.text || 
-                    msg.message?.imageMessage?.caption ||
-                    msg.message?.videoMessage?.caption ||
-                    '[Media/No Content]';
+    // ── Detect message type ────────────────────────────────────────────────
+    const isImage    = !!msg.message?.imageMessage;
+    const isVideo    = !!msg.message?.videoMessage;
+    const isAudio    = !!msg.message?.audioMessage;
+    const isSticker  = !!msg.message?.stickerMessage;
+    const isDocument = !!msg.message?.documentMessage;
+
+    // Extract document metadata for display/download
+    const docMeta = isDocument ? {
+      fileName: msg.message?.documentMessage?.fileName || 'document',
+      mimeType: msg.message?.documentMessage?.mimetype || 'application/octet-stream',
+      fileSize: Number(msg.message?.documentMessage?.fileLength || 0),
+      pageCount: msg.message?.documentMessage?.pageCount || null,
+    } : null;
+
+    const rawCaption =
+      msg.message?.imageMessage?.caption ||
+      msg.message?.videoMessage?.caption ||
+      '';
+
+    let content =
+      msg.message?.conversation ||
+      msg.message?.extendedTextMessage?.text ||
+      rawCaption ||
+      (isDocument ? `[Document: ${docMeta?.fileName}]` : '[Media/No Content]');
+
+    // ── Image → Gemini Vision pipeline ────────────────────────────────────
+    let imageAnalysis: Awaited<ReturnType<typeof analyzeImageWithGemini>> | null = null;
+
+    if (isImage && whatsappSocket) {
+      try {
+        const mimeType = msg.message?.imageMessage?.mimetype || 'image/jpeg';
+        log.info('📸 Image message detected', `Downloading for Gemini Vision analysis (${mimeType})...`);
+        clog.logClassifyStart(0); // signal pipeline start
+
+        const imageBuffer = await downloadMediaMessage(
+          msg,
+          'buffer',
+          {},
+          { logger: pino({ level: 'silent' }) as any, reuploadRequest: whatsappSocket.updateMediaMessage }
+        ) as Buffer;
+
+        imageAnalysis = await analyzeImageWithGemini(imageBuffer, mimeType, rawCaption);
+
+        // Cache the buffer so the user can download it from the frontend
+        if (msg.key.id) {
+          addToMediaCache(msg.key.id, {
+            buffer: imageBuffer,
+            mimeType,
+            fileName: `image_${msg.key.id}.${mimeType.split('/')[1] || 'jpg'}`,
+            size: imageBuffer.length,
+            cachedAt: Date.now(),
+            mediaType: 'image',
+          });
+        }
+
+        // Use rich combined content for downstream classification
+        content = imageAnalysis.combinedContent;
+
+        log.success('📸 Image analyzed', 
+          `desc="${imageAnalysis.description.slice(0, 60)}" | ocr="${imageAnalysis.extractedText.slice(0, 60)}"`);
+      } catch (imgErr: any) {
+        log.warning('📸 Image download/analysis failed', imgErr.message);
+        // Fall back to caption or placeholder — continue with text classification
+        content = rawCaption || '[Image - analysis failed]';
+      }
+    }
+
+    // ── Download & cache non-image media ──────────────────────────────────
+    if ((isVideo || isAudio || isSticker || isDocument) && whatsappSocket && msg.key.id) {
+      try {
+        const mediaTypeLabel = isVideo ? 'video' : isAudio ? 'audio' : isSticker ? 'sticker' : 'document';
+        const mimeType = (
+          msg.message?.videoMessage?.mimetype ||
+          msg.message?.audioMessage?.mimetype ||
+          msg.message?.stickerMessage?.mimetype ||
+          docMeta?.mimeType ||
+          'application/octet-stream'
+        );
+        const ext = mimeType.split('/')[1]?.split(';')[0] || 'bin';
+        const fileName = isDocument ? (docMeta?.fileName || `doc.${ext}`) : `${mediaTypeLabel}_${msg.key.id}.${ext}`;
+
+        // Skip very large video files (>80 MB) to protect memory
+        const fileSize = Number(
+          msg.message?.videoMessage?.fileLength ||
+          msg.message?.audioMessage?.fileLength ||
+          msg.message?.documentMessage?.fileLength || 0
+        );
+        if (fileSize > 80 * 1024 * 1024) {
+          log.info(`⏭️ ${mediaTypeLabel} too large to cache`, `${(fileSize / 1024 / 1024).toFixed(1)} MB`);
+        } else {
+          const buf = await downloadMediaMessage(
+            msg,
+            'buffer',
+            {},
+            { logger: pino({ level: 'silent' }) as any, reuploadRequest: whatsappSocket.updateMediaMessage }
+          ) as Buffer;
+
+          addToMediaCache(msg.key.id, {
+            buffer: buf,
+            mimeType,
+            fileName,
+            size: buf.length,
+            cachedAt: Date.now(),
+            mediaType: mediaTypeLabel as MediaCacheEntry['mediaType'],
+          });
+          log.info(`📦 ${mediaTypeLabel} cached`, `${fileName} (${(buf.length / 1024).toFixed(1)} KB)`);
+        }
+      } catch (mediaErr: any) {
+        log.warning('📦 Media cache failed', mediaErr.message);
+      }
+    }
     
-    const sender = msg.pushName || msg.key.remoteJid || 'Unknown';
-    const chatName = msg.key.remoteJid || 'Unknown';
-    const isGroup = chatName.endsWith('@g.us');
-    
+    // Build a clean sender name — reject pushName if it's blank / single char (e.g. '.')
+    const rawPush  = (msg.pushName || '').trim();
+    const jid      = msg.key.remoteJid || '';
+    const jidClean = jid.replace(/@s\.whatsapp\.net|@g\.us/gi, '').trim();
+    const validPush = rawPush.length > 1 ? rawPush : null;
+    const sender   = validPush || (/^\d+$/.test(jidClean) ? `+${jidClean}` : jidClean) || 'Unknown';
+    const chatName  = jid || 'Unknown';
+    const isGroup   = chatName.endsWith('@g.us');
+
+    // ── Privacy check: skip classification for ignored contacts/groups ──────────
+    const isBlocked = await isSenderBlocked(userId, chatName);
+    if (isBlocked) {
+      clog.logPrivacyBlocked(sender);
+      // Store for history but mark as private — no AI, no action items
+      const messageData = {
+        sender, chat_name: chatName,
+        timestamp: new Date((msg.messageTimestamp as number) * 1000).toISOString(),
+        content,
+        message_type: Object.keys(msg.message || {})[0] || 'text',
+        classification: 'private' as any,
+        decision: 'none'  as any,
+        priority: 'none'  as any,
+        ai_reasoning: 'Privacy: contact is on your ignore list',
+        metadata: { isGroupMsg: isGroup, fromMe: false, private: true, messageKey: msg.key.id },
+      };
+      await hybridMessageStore.add(messageData, userId, sessionOwnerJwt ?? undefined);
+      log.info('Private message skipped', `From: ${sender} (ignored by privacy settings)`);
+      return null;
+    }
+
     // Classify with AI
     log.info('Classifying message', `From: ${sender}`);
+    clog.logClassifyStart(content.length);
     const classification = await classifyWithAI(content, sender);
 
     const messageData = {
@@ -320,14 +629,28 @@ async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> 
         suggestedTask: classification.suggestedTask,
         deadline: classification.deadline,
         actionItemsCount: classification.actionItems?.length || 0,
-        messageKey: msg.key.id
+        messageKey: msg.key.id,
+        // Media type flags for frontend display
+        mediaType: isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : isSticker ? 'sticker' : isDocument ? 'document' : null,
+        // Image analysis data (present only for image messages)
+        ...(imageAnalysis ? {
+          imageAnalysis: {
+            description:     imageAnalysis.description,
+            extractedText:   imageAnalysis.extractedText,
+            hasActionable:   imageAnalysis.hasActionableContent,
+            mimeType:        imageAnalysis.mimeType,
+          }
+        } : {}),
+        // Document metadata (present only for document messages)
+        ...(docMeta ? { document: docMeta } : {}),
       }
     };
 
-    // Store using hybrid store with userId for per-user data
-    const stored = await hybridMessageStore.add(messageData, userId);
+    // Store using hybrid store with userId + JWT for per-user data (JWT satisfies RLS)
+    const stored = await hybridMessageStore.add(messageData, userId, sessionOwnerJwt ?? undefined);
     const messageId = stored.id;
     
+    clog.logStored(stored.id, hybridMessageStore.getStorageType(), classification.category, classification.priority);
     log.success(`Message stored (${hybridMessageStore.getStorageType()})`, 
       `${classification.category.toUpperCase()} | ${classification.priority} | ${classification.decision}`,
       { id: stored.id, sender, classification }
@@ -353,7 +676,8 @@ async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> 
           aiConfidence: 0.9,
           status: 'pending',
           completedAt: null
-        });
+        }, userId, sessionOwnerJwt ?? undefined);
+        clog.logActionItemCreated(actionItem.title, actionItem.priority, 'ai');
         log.info('AI Action Item Created', actionItem.title);
       }
     } else if (classification.decision === 'create' || classification.decision === 'review') {
@@ -374,15 +698,20 @@ async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> 
         aiConfidence: 0.7,
         status: 'pending',
         completedAt: null
-      });
+      }, userId, sessionOwnerJwt ?? undefined);
       
       if (actionItem) {
+        clog.logActionItemCreated(actionItem.title, actionItem.priority, 'rule');
         log.info('Action Item Auto-Created', actionItem.title);
       }
+    } else {
+      clog.logIgnored(`decision=${classification.decision}, category=${classification.category}`);
     }
 
+    clog.logMessageEnd();
     return messageId;
   } catch (error: any) {
+    clog.logPipelineError('storeMessage', error.message);
     log.error('Store message failed', error.message);
     return null;
   }
@@ -457,9 +786,12 @@ export async function startWhatsApp(force: boolean = false): Promise<void> {
   log.info('Starting WhatsApp Client', 'Using Baileys (WebSocket)...');
 
   try {
-    // Get Supabase auth state (using session owner for credential isolation)
-    const ownerForSession = sessionOwnerId || 'default';
-    authState = await useSupabaseAuthState(ownerForSession);
+    // Use the Baileys session directory (decoupled from data owner — may differ
+    // when the user logged in with a different Supabase account than the one that
+    // originally created the WhatsApp session).
+    const credsDir = getBaileysSessionDir();
+    console.log(`📂 Using Baileys creds directory: ${credsDir}`);
+    authState = await useSupabaseAuthState(credsDir);
     
     // Fetch latest Baileys version
     const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -500,7 +832,7 @@ export async function startWhatsApp(force: boolean = false): Promise<void> {
       // Connection timeout - 3 minutes
       connectTimeoutMs: 180000,
       // Keep alive to maintain connection
-      keepAliveIntervalMs: 30000,
+      keepAliveIntervalMs: 15000,  // ping every 15s (was 30s) to stay alive
       // Retry on network issues
       retryRequestDelayMs: 1000,
       // Don't auto-refresh QR too quickly
@@ -605,6 +937,7 @@ export async function startWhatsApp(force: boolean = false): Promise<void> {
         const userPhone = user?.id?.split(':')[0] || user?.id || 'Unknown';
         
         console.log(`✅ WhatsApp connected as: ${userName} (${userPhone})`);
+        clog.logWhatsAppConnected(userPhone, userName);
         
         // Reset all tracking vars on successful connection
         connectionPhase = 'connected';
@@ -819,7 +1152,7 @@ export async function startWhatsApp(force: boolean = false): Promise<void> {
               progressText: 'Waiting for confirmation on your phone...'
             });
             // Give more time during authentication
-            scheduleReconnect(MIN_RECONNECT_DELAY, 'authentication in progress');
+            scheduleReconnect(5000, 'authentication in progress');
           } else if (shouldReconnect) {
             connectionHealthy = false;
             
@@ -914,12 +1247,17 @@ export async function startWhatsApp(force: boolean = false): Promise<void> {
         const isFromMe = msg.key.fromMe;
         
         // Skip status updates
-        if (msg.key.remoteJid === 'status@broadcast') continue;
+        if (msg.key.remoteJid === 'status@broadcast') {
+          clog.logSkipStatus();
+          continue;
+        }
 
         const content = msg.message?.conversation || 
                         msg.message?.extendedTextMessage?.text || 
                         '[Media]';
-        const sender = isFromMe ? (currentUser?.name || 'Me') : (msg.pushName || msg.key.remoteJid || 'Unknown');
+        const chatName = msg.key.remoteJid || 'Unknown';
+        const isGroup  = chatName.endsWith('@g.us');
+        const sender = isFromMe ? (currentUser?.name || 'Me') : (msg.pushName || chatName || 'Unknown');
         
         // Get unique message key for deduplication
         const messageKey = msg.key.id;
@@ -927,16 +1265,17 @@ export async function startWhatsApp(force: boolean = false): Promise<void> {
 
         // Fast in-memory duplicate check first
         if (processedMessageIds.has(messageKey)) {
-          console.log(`⏭️ Skipping duplicate (cache): ${messageKey}`);
+          clog.logSkipDuplicate(messageKey, 'cache');
           continue;
         }
 
         // Then check database for messages not in cache (on wake/restart)
+        const currentUserId = getCurrentUserId();
         if (!processedMessageIds.has(messageKey)) {
           try {
-            const isDuplicate = await hybridMessageStore.existsByMessageKey(messageKey, userPhone);
+            const isDuplicate = await hybridMessageStore.existsByMessageKey(messageKey, currentUserId || undefined);
             if (isDuplicate) {
-              console.log(`⏭️ Skipping duplicate (DB): ${messageKey}`);
+              clog.logSkipDuplicate(messageKey, 'db');
               addToProcessedCache(messageKey);
               continue;
             }
@@ -971,13 +1310,15 @@ export async function startWhatsApp(force: boolean = false): Promise<void> {
 
         // Log the incoming message
         log.message(sender, content.substring(0, 100));
+        clog.logMessageReceived(sender, chatName, content, messageKey, isGroup);
 
         // Store and classify with AI (skip classification for own messages)
         if (!isFromMe) {
           await storeMessage(msg);
         } else {
           // Store own messages without classification for context
-          await storeOwnMessage(msg, userPhone);
+          clog.logOwnMessage(content);
+          await storeOwnMessage(msg, currentUserId);
         }
       }
     });
@@ -1088,8 +1429,11 @@ export async function logoutWhatsApp(): Promise<void> {
   
   log.info('WhatsApp Logged Out', 'Session cleared');
   
-  // Clear session owner
+  // Clear session owner (both in-memory and on disk)
   sessionOwnerId = null;
+  baileysSessionDir = null;
+  sessionOwnerJwt = null;
+  try { if (fs.existsSync(SESSION_OWNER_FILE)) fs.unlinkSync(SESSION_OWNER_FILE); } catch {}
 }
 
 // Check if connected

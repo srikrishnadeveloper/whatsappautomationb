@@ -23,9 +23,65 @@ import {
   CheckSquare,
   Search,
   MessageSquare,
-  ArrowRight
+  ArrowRight,
+  X
 } from 'lucide-react'
 import { API_BASE, authFetch, authSSEUrl } from '../services/api'
+
+// ---- QR Notification Sound ----
+function playQrNotificationSound() {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
+    if (!AudioCtx) return
+    const ctx = new AudioCtx()
+    const playTone = (freq: number, start: number, dur: number) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = freq
+      gain.gain.setValueAtTime(0.3, ctx.currentTime + start)
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + start + dur)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(ctx.currentTime + start)
+      osc.stop(ctx.currentTime + start + dur)
+    }
+    // Three ascending tones
+    playTone(523, 0, 0.15)    // C5
+    playTone(659, 0.18, 0.15) // E5
+    playTone(784, 0.36, 0.25) // G5
+    setTimeout(() => ctx.close(), 1500)
+  } catch (e) {
+    console.warn('Audio notification failed:', e)
+  }
+}
+
+// ---- QR Scan Banner Component ----
+function QrScanBanner({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <div className="fixed top-0 left-0 right-0 z-[100] animate-slide-down">
+      <div className="mx-auto max-w-xl mt-4 px-4">
+        <div className="flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-indigo-600 to-blue-600 text-white rounded-xl shadow-lg ring-2 ring-white/20">
+          <div className="relative shrink-0">
+            <Smartphone className="w-6 h-6" />
+            <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-yellow-400 rounded-full animate-ping" />
+            <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-yellow-400 rounded-full" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold">WhatsApp QR Ready!</p>
+            <p className="text-xs text-white/80">Scan the QR code below to connect</p>
+          </div>
+          <button 
+            onClick={onDismiss} 
+            className="p-1 rounded-md hover:bg-white/20 transition-colors shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 const WAITING_TIPS = [
   "Messages are classified using AI to identify tasks automatically",
@@ -76,9 +132,59 @@ export default function Connect() {
   const [serverWaking, setServerWaking] = useState(false)
   const [wakingMessage, setWakingMessage] = useState('')
   const [initialLoadMessage, setInitialLoadMessage] = useState('Checking connection status...')
+  const [showQrBanner, setShowQrBanner] = useState(false)
   const sseRef = useRef<EventSource | null>(null)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hasInitialized = useRef(false)
+  const prevStatusRef = useRef<string>('disconnected')
+
+  // ---- QR Notification: sound + banner + browser notification ----
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = state.status
+
+    if (state.status === 'qr_ready' && prev !== 'qr_ready') {
+      // Play sound
+      playQrNotificationSound()
+      // Show banner
+      setShowQrBanner(true)
+      // Auto-dismiss banner after 12s
+      const t = setTimeout(() => setShowQrBanner(false), 12000)
+      // Browser notification (if permitted)
+      if ('Notification' in window) {
+        if (Notification.permission === 'granted') {
+          new Notification('WhatsApp QR Ready', {
+            body: 'Open Mindline and scan the QR code to connect WhatsApp.',
+            icon: '/mindline-logo.png',
+          })
+        } else if (Notification.permission !== 'denied') {
+          Notification.requestPermission().then(p => {
+            if (p === 'granted') {
+              new Notification('WhatsApp QR Ready', {
+                body: 'Open Mindline and scan the QR code to connect WhatsApp.',
+                icon: '/mindline-logo.png',
+              })
+            }
+          })
+        }
+      }
+      // Flash tab title
+      let flash = true
+      const origTitle = document.title
+      const titleInterval = setInterval(() => {
+        document.title = flash ? '🔔 Scan WhatsApp QR!' : origTitle
+        flash = !flash
+      }, 1000)
+      // Restore title when dismissed or status changes
+      return () => {
+        clearTimeout(t)
+        clearInterval(titleInterval)
+        document.title = origTitle
+      }
+    } else if (state.status !== 'qr_ready') {
+      setShowQrBanner(false)
+    }
+  }, [state.status])
 
   const fetchStatus = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true)
@@ -832,6 +938,9 @@ export default function Connect() {
 
   return (
     <div className="h-full flex flex-col bg-[var(--bg-primary)]">
+      {/* QR Scan notification banner */}
+      {showQrBanner && <QrScanBanner onDismiss={() => setShowQrBanner(false)} />}
+
       {/* Desktop Layout - Two columns */}
       <div className="hidden lg:flex flex-1 gap-6 p-6 max-w-7xl mx-auto w-full">
         {/* Left: Connection + Quick Links + Recent Messages */}

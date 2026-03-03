@@ -6,15 +6,19 @@ import {
   Loader2,
   RefreshCw,
   Trash2,
-  Clock,
-  AlertCircle,
   Info,
   X,
   MessageSquare,
-  Filter
+  Filter,
+  Briefcase,
+  BookOpen,
+  User,
+  Inbox,
+  Mail
 } from 'lucide-react'
 import clsx from 'clsx'
 import { API_BASE, authFetch, authSSEUrl } from '../services/api'
+import { formatContact, contactInitial } from '../utils/formatContact'
 
 interface Task {
   id: string
@@ -29,6 +33,7 @@ interface Task {
   originalMessage?: string
   aiConfidence?: number
   createdAt: string
+  source?: 'whatsapp' | 'gmail'
 }
 
 function TaskRow({ 
@@ -72,17 +77,28 @@ function TaskRow({
           {task.title}
         </span>
         
-        {/* Priority Badge (only for high/urgent) */}
-        {!isCompleted && (task.priority === 'urgent' || task.priority === 'high') && (
-          <span className={clsx(
-            'text-[10px] font-medium px-1.5 py-0.5 rounded-full uppercase tracking-wider shrink-0',
-            task.priority === 'urgent' 
-              ? 'bg-red-50 text-red-600 border border-red-100' 
-              : 'bg-orange-50 text-orange-600 border border-orange-100'
-          )}>
-            {task.priority}
-          </span>
-        )}
+        {/* Priority + Source badges */}
+        <div className="flex items-center gap-1 shrink-0">
+          {!isCompleted && (task.priority === 'urgent' || task.priority === 'high') && (
+            <span className={clsx(
+              'text-[10px] font-medium px-1.5 py-0.5 rounded-full uppercase tracking-wider',
+              task.priority === 'urgent'
+                ? 'bg-red-50 text-red-600 border border-red-100'
+                : 'bg-orange-50 text-orange-600 border border-orange-100'
+            )}>
+              {task.priority}
+            </span>
+          )}
+          {task.source === 'gmail' ? (
+            <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100">
+              <Mail className="w-2.5 h-2.5" /> Gmail
+            </span>
+          ) : task.source === 'whatsapp' ? (
+            <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-green-50 text-green-600 border border-green-100">
+              <MessageSquare className="w-2.5 h-2.5" /> WA
+            </span>
+          ) : null}
+        </div>
       </div>
 
       {/* Metadata */}
@@ -120,7 +136,8 @@ function TaskSection({
   onDelete,
   onShowInfo,
   defaultOpen = true,
-  icon: Icon
+  icon: Icon,
+  color = 'text-[var(--text-muted)]'
 }: { 
   title: string
   tasks: Task[]
@@ -129,6 +146,7 @@ function TaskSection({
   onShowInfo: (task: Task) => void
   defaultOpen?: boolean
   icon?: any
+  color?: string
 }) {
   const [open, setOpen] = useState(defaultOpen)
 
@@ -143,7 +161,7 @@ function TaskSection({
         <div className="p-0.5 rounded hover:bg-[var(--bg-surface-soft)] transition-colors">
           {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </div>
-        {Icon && <Icon className="w-3.5 h-3.5 text-[var(--text-muted)] group-hover:text-[var(--text-primary)] transition-colors" />}
+        {Icon && <Icon className={clsx('w-3.5 h-3.5 transition-colors', color)} />}
         <span>{title}</span>
         <span className="text-[var(--text-muted)] font-normal ml-1 bg-[var(--bg-surface-soft)] px-1.5 rounded-full text-[10px]">
           {tasks.length}
@@ -195,16 +213,17 @@ export default function Tasks() {
         const actionTasks: Task[] = json.data.map((action: any) => ({
           id: action.id,
           title: action.title,
-          description: action.description || action.originalMessage,
+          description: action.description || action.original_message || action.originalMessage,
           priority: action.priority || 'medium',
           status: action.status || 'pending',
           category: action.category || 'other',
           tags: action.tags || [],
           sender: action.sender,
-          chatName: action.chatName,
-          originalMessage: action.originalMessage,
-          aiConfidence: action.aiConfidence,
-          createdAt: action.createdAt
+          chatName: action.chat_name || action.chatName,
+          originalMessage: action.original_message || action.originalMessage,
+          aiConfidence: action.ai_confidence || action.aiConfidence,
+          createdAt: action.created_at || action.createdAt,
+          source: action.source || 'whatsapp'
         }))
         setTasks(actionTasks)
       } else {
@@ -329,9 +348,10 @@ export default function Tasks() {
     return true
   })
 
-  const urgentTasks = filteredTasks.filter(t => t.priority === 'urgent' && t.status !== 'completed')
-  const highTasks = filteredTasks.filter(t => t.priority === 'high' && t.status !== 'completed')
-  const otherTasks = filteredTasks.filter(t => !['urgent', 'high'].includes(t.priority) && t.status !== 'completed')
+  const workTasks     = filteredTasks.filter(t => t.category === 'work'     && t.status !== 'completed')
+  const studyTasks    = filteredTasks.filter(t => t.category === 'study'    && t.status !== 'completed')
+  const personalTasks = filteredTasks.filter(t => t.category === 'personal' && t.status !== 'completed')
+  const otherTasks    = filteredTasks.filter(t => !['work','study','personal'].includes(t.category) && t.status !== 'completed')
   const completedTasks = filteredTasks.filter(t => t.status === 'completed')
 
   const pendingCount = tasks.filter(t => t.status !== 'completed').length
@@ -377,13 +397,13 @@ export default function Tasks() {
               {selectedTask.sender && (
                 <div className="flex items-center gap-3 p-3 bg-[var(--bg-surface-soft)] rounded-lg">
                   <div className="w-10 h-10 rounded-full bg-[var(--accent-light)] flex items-center justify-center text-sm font-bold text-[var(--accent-primary)] uppercase">
-                    {selectedTask.sender[0]}
+                    {contactInitial(selectedTask.sender, selectedTask.chatName)}
                   </div>
                   <div>
                     <p className="text-xs text-[var(--text-muted)]">From</p>
-                    <p className="text-sm font-medium text-[var(--text-primary)]">{selectedTask.sender}</p>
+                    <p className="text-sm font-medium text-[var(--text-primary)]">{formatContact(selectedTask.sender, selectedTask.chatName)}</p>
                     {selectedTask.chatName && selectedTask.chatName !== selectedTask.sender && (
-                      <p className="text-xs text-[var(--text-secondary)]">in {selectedTask.chatName}</p>
+                      <p className="text-xs text-[var(--text-secondary)]">in {formatContact(selectedTask.chatName)}</p>
                     )}
                   </div>
                 </div>
@@ -425,6 +445,18 @@ export default function Tasks() {
                     <p className="text-xs font-medium text-[var(--text-primary)] capitalize">{selectedTask.category}</p>
                   </div>
                 )}
+
+                <div className="p-2.5 bg-[var(--bg-surface-soft)] rounded-lg">
+                  <p className="text-[10px] text-[var(--text-muted)] uppercase mb-0.5">Source</p>
+                  <p className={clsx(
+                    'text-xs font-medium capitalize flex items-center gap-1',
+                    selectedTask.source === 'gmail' ? 'text-blue-600' : 'text-green-600'
+                  )}>
+                    {selectedTask.source === 'gmail'
+                      ? <><Mail className="w-3 h-3" /> Gmail</>
+                      : <><MessageSquare className="w-3 h-3" /> WhatsApp</>}
+                  </p>
+                </div>
                 
                 {selectedTask.createdAt && (
                   <div className="p-2.5 bg-[var(--bg-surface-soft)] rounded-lg">
@@ -508,7 +540,7 @@ export default function Tasks() {
           </div>
           <h3 className="text-lg font-medium text-[var(--text-primary)] mb-1">All caught up</h3>
           <p className="text-sm text-[var(--text-secondary)] max-w-xs mx-auto">
-            No tasks found. Tasks extracted from your WhatsApp messages will appear here.
+            No tasks found. Tasks extracted from your WhatsApp messages and Gmail emails will appear here.
           </p>
         </div>
       ) : filteredTasks.length === 0 ? (
@@ -525,28 +557,40 @@ export default function Tasks() {
       ) : (
         <div className="space-y-2">
           <TaskSection
-            title="Urgent"
-            tasks={urgentTasks}
+            title="Work"
+            tasks={workTasks}
             onToggle={toggleTask}
             onDelete={deleteTask}
             onShowInfo={showTaskInfo}
-            icon={AlertCircle}
+            icon={Briefcase}
+            color="text-blue-500"
           />
           <TaskSection
-            title="High Priority"
-            tasks={highTasks}
+            title="Study"
+            tasks={studyTasks}
             onToggle={toggleTask}
             onDelete={deleteTask}
             onShowInfo={showTaskInfo}
-            icon={AlertCircle}
+            icon={BookOpen}
+            color="text-purple-500"
           />
           <TaskSection
-            title="Other Tasks"
+            title="Personal"
+            tasks={personalTasks}
+            onToggle={toggleTask}
+            onDelete={deleteTask}
+            onShowInfo={showTaskInfo}
+            icon={User}
+            color="text-green-500"
+          />
+          <TaskSection
+            title="Other"
             tasks={otherTasks}
             onToggle={toggleTask}
             onDelete={deleteTask}
             onShowInfo={showTaskInfo}
-            icon={Clock}
+            icon={Inbox}
+            color="text-[var(--text-muted)]"
           />
           <TaskSection
             title="Completed"
@@ -556,6 +600,7 @@ export default function Tasks() {
             onShowInfo={showTaskInfo}
             defaultOpen={false}
             icon={Check}
+            color="text-emerald-500"
           />
         </div>
       )}

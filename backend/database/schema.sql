@@ -61,6 +61,27 @@ CREATE TABLE IF NOT EXISTS feedback (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Gmail Messages table: Store all synced Gmail messages
+CREATE TABLE IF NOT EXISTS gmail_messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    gmail_id TEXT NOT NULL UNIQUE,
+    from_email TEXT NOT NULL,
+    from_name TEXT,
+    subject TEXT,
+    snippet TEXT,
+    body_text TEXT,
+    labels TEXT[],
+    gmail_timestamp TIMESTAMPTZ NOT NULL,
+    is_read BOOLEAN DEFAULT FALSE,
+    has_attachments BOOLEAN DEFAULT FALSE,
+    classification TEXT, -- work, study, personal, ignore
+    decision TEXT, -- create, ignore, review
+    priority TEXT, -- urgent, high, medium, low
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_classification ON messages(classification);
@@ -70,6 +91,11 @@ CREATE INDEX IF NOT EXISTS idx_rules_type ON rules(rule_type);
 CREATE INDEX IF NOT EXISTS idx_rules_active ON rules(is_active);
 CREATE INDEX IF NOT EXISTS idx_tasks_notion_page ON tasks(notion_page_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(task_status);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_user_id ON gmail_messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_timestamp ON gmail_messages(gmail_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_classification ON gmail_messages(classification);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_decision ON gmail_messages(decision);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_priority ON gmail_messages(priority);
 
 -- Create updated_at trigger function
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -90,6 +116,9 @@ CREATE TRIGGER update_rules_updated_at BEFORE UPDATE ON rules
 CREATE TRIGGER update_tasks_updated_at BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_gmail_messages_updated_at BEFORE UPDATE ON gmail_messages
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- Insert some default rules
 INSERT INTO rules (rule_type, keywords, category, priority) VALUES
     ('keyword', ARRAY['meeting', 'deadline', 'project', 'report', 'presentation'], 'work', 'high'),
@@ -102,3 +131,4 @@ COMMENT ON TABLE messages IS 'Stores all WhatsApp messages for processing and an
 COMMENT ON TABLE rules IS 'Custom filtering rules and preferences';
 COMMENT ON TABLE tasks IS 'Tracks Notion tasks created from messages';
 COMMENT ON TABLE feedback IS 'User corrections for AI learning and improvement';
+COMMENT ON TABLE gmail_messages IS 'Stores all synced Gmail messages';

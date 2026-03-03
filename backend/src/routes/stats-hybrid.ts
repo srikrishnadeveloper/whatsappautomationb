@@ -13,15 +13,15 @@ const router = Router();
 // GET /api/stats - Get overall statistics
 router.get('/', async (req, res) => {
   try {
-    const stats = await hybridMessageStore.getStats(req.userId);
+    const stats = await hybridMessageStore.getStats(req.userId, req.supabaseToken);
     
     // Get action items count
-    const { data: actions, total: actionsTotal } = await hybridActionItems.getAll({ limit: 1000, userId: req.userId });
+    const { data: actions, total: actionsTotal } = await hybridActionItems.getAll({ limit: 1000, userId: req.userId, jwt: req.supabaseToken });
     const pendingActions = actions.filter((a: any) => a.status === 'pending').length;
     
     // Get recent 24h count
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const { data: allMessages } = await hybridMessageStore.getAll({ limit: 1000, userId: req.userId });
+    const { data: allMessages } = await hybridMessageStore.getAll({ limit: 1000, userId: req.userId, jwt: req.supabaseToken });
     const recent24h = allMessages.filter((m: any) => {
       const timestamp = m.created_at || m.timestamp;
       return timestamp && timestamp >= yesterday;
@@ -59,7 +59,7 @@ router.get('/timeline', async (req, res) => {
     const daysAgo = new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000).toISOString();
     
     const { data: messages } = await hybridMessageStore.getAll({ 
-      limit: 1000, userId: req.userId
+      limit: 1000, userId: req.userId, jwt: req.supabaseToken
     });
     
     // Filter for recent messages and build timeline
@@ -102,7 +102,7 @@ router.get('/timeline', async (req, res) => {
 router.get('/top-senders', async (req, res) => {
   try {
     const { limit = 10 } = req.query;
-    const { data: messages } = await hybridMessageStore.getAll({ limit: 1000, userId: req.userId });
+    const { data: messages } = await hybridMessageStore.getAll({ limit: 1000, userId: req.userId, jwt: req.supabaseToken });
     
     // Count by sender
     const senderCounts: Record<string, number> = {};
@@ -134,7 +134,7 @@ router.get('/top-senders', async (req, res) => {
 // GET /api/stats/summary - Quick summary for dashboard
 router.get('/summary', async (req, res) => {
   try {
-    const stats = await hybridMessageStore.getStats(req.userId);
+    const stats = await hybridMessageStore.getStats(req.userId, req.supabaseToken);
     
     res.json({
       success: true,

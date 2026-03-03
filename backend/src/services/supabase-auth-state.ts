@@ -59,7 +59,10 @@ export async function useSupabaseAuthState(userId: string): Promise<AuthState> {
           : JSON.parse(JSON.stringify(data.session_data), BufferJSON.reviver);
 
         creds = sessionData.creds || initAuthCreds();
-        keys = sessionData.keys || {};
+        // Pre-load ALL signal keys into memory so they're immediately available
+        if (sessionData.keys && typeof sessionData.keys === 'object') {
+          keys = sessionData.keys;
+        }
         console.log(`✅ WhatsApp session loaded from Supabase for user ${userId}`);
       }
     } catch (e: any) {
@@ -69,17 +72,37 @@ export async function useSupabaseAuthState(userId: string): Promise<AuthState> {
 
   // Fallback: load from local filesystem
   if (!creds) {
-    const credsFile = path.join(localDir, 'creds.json');
-    if (fs.existsSync(credsFile)) {
+    // Try new session.json (full creds + keys combined) first — written since v2.1
+    const sessionFile = path.join(localDir, 'session.json');
+    const credsFile   = path.join(localDir, 'creds.json');
+
+    if (fs.existsSync(sessionFile)) {
+      try {
+        const raw = fs.readFileSync(sessionFile, 'utf-8');
+        const stored = JSON.parse(raw, BufferJSON.reviver);
+        creds = stored.creds || initAuthCreds();
+        // Restore keys into the in-memory map so get() never needs the individual files
+        if (stored.keys && typeof stored.keys === 'object') {
+          keys = stored.keys;
+        }
+        console.log(`✅ WhatsApp session loaded from session.json for user ${userId}`);
+      } catch (e) {
+        console.log('⚠️ Failed to read session.json, falling back to creds.json');
+        creds = null as any;
+      }
+    }
+
+    // Backward-compat: load legacy creds.json (no keys stored there)
+    if (!creds && fs.existsSync(credsFile)) {
       try {
         const raw = fs.readFileSync(credsFile, 'utf-8');
         creds = JSON.parse(raw, BufferJSON.reviver);
-        console.log(`✅ WhatsApp session loaded from local filesystem for user ${userId}`);
+        console.log(`✅ WhatsApp creds loaded from creds.json for user ${userId} (keys loaded lazily)`);
       } catch (e) {
         console.log('⚠️ Failed to read local creds, creating new session');
         creds = initAuthCreds();
       }
-    } else {
+    } else if (!creds) {
       creds = initAuthCreds();
       console.log(`🆕 New WhatsApp session created for user ${userId}`);
     }
@@ -87,20 +110,27 @@ export async function useSupabaseAuthState(userId: string): Promise<AuthState> {
 
   // Save session to both local and Supabase
   const saveState = async () => {
+    // Serialise the full in-memory state (creds + every signal key) in one shot.
+    // This is the canonical save format from v2.1 onwards.
     const sessionData = JSON.parse(JSON.stringify({ creds, keys }, BufferJSON.replacer));
 
-    // Save to local filesystem (fast)
+    // ── 1. Local filesystem (fast, always attempted first) ──────────────────
     try {
+      // session.json  — full state (creds + keys).  Single authoritative file.
+      const sessionFile = path.join(localDir, 'session.json');
+      fs.writeFileSync(sessionFile, JSON.stringify(sessionData));
+
+      // Keep creds.json for backward compatibility with older code / manual inspection
       const credsFile = path.join(localDir, 'creds.json');
       fs.writeFileSync(credsFile, JSON.stringify(creds, BufferJSON.replacer, 2));
     } catch (e: any) {
-      console.error('⚠️ Local creds save failed:', e.message);
+      console.error('⚠️ Local session save failed:', e.message);
     }
 
-    // Save to Supabase (persistent)
+    // ── 2. Supabase (persistent across redeploys / machine changes) ─────────
     if (useSupabase) {
       try {
-        const db = getSupabaseClient();
+        const db = getSupabaseClient(); // uses service-role key when configured → bypasses RLS
         await db
           .from('whatsapp_sessions')
           .upsert({
@@ -111,7 +141,8 @@ export async function useSupabaseAuthState(userId: string): Promise<AuthState> {
             updated_at: new Date().toISOString(),
           }, { onConflict: 'user_id' });
       } catch (e: any) {
-        console.error('⚠️ Supabase session save failed:', e.message);
+        // Non-fatal — local file is the fallback
+        console.warn('⚠️ Supabase session save failed (local file is backup):', e.message);
       }
     }
   };

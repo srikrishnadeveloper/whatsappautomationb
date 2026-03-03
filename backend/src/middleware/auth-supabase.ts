@@ -11,6 +11,7 @@ declare global {
   namespace Express {
     interface Request {
       userId?: string;
+      supabaseToken?: string;
       user?: {
         id: string;
         email: string;
@@ -65,6 +66,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     }
 
     req.userId = data.user.id;
+    req.supabaseToken = token; // Store JWT for per-user DB access
     req.user = {
       id: data.user.id,
       email: data.user.email || '',
@@ -94,6 +96,7 @@ export async function optionalAuth(req: Request, res: Response, next: NextFuncti
 
     if (!error && data?.user) {
       req.userId = data.user.id;
+      req.supabaseToken = token; // Store JWT for per-user DB access
       req.user = {
         id: data.user.id,
         email: data.user.email || '',

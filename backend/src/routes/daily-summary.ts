@@ -95,14 +95,14 @@ router.get('/', async (req, res) => {
     const endISO = nextDay.toISOString();
     
     // Fetch messages for the day
-    const { data: allMessages } = await hybridMessageStore.getAll({ limit: 1000, userId: req.userId });
+    const { data: allMessages } = await hybridMessageStore.getAll({ limit: 1000, userId: req.userId, jwt: req.supabaseToken });
     const messages = allMessages.filter((m: any) => {
       const timestamp = m.created_at || m.timestamp;
       return timestamp >= startISO && timestamp < endISO;
     });
     
     // Fetch action items for the day
-    const { data: allActions } = await hybridActionItems.getAll({ limit: 1000, userId: req.userId });
+    const { data: allActions } = await hybridActionItems.getAll({ limit: 1000, userId: req.userId, jwt: req.supabaseToken });
     const createdTasks = allActions.filter((a: any) => {
       const created = a.created_at || a.createdAt;
       return created >= startISO && created < endISO;
@@ -238,13 +238,13 @@ router.get('/week', async (req, res) => {
       const startISO = date.toISOString();
       const endISO = nextDay.toISOString();
       
-      const { data: allMessages } = await hybridMessageStore.getAll({ limit: 1000, userId: req.userId });
+      const { data: allMessages } = await hybridMessageStore.getAll({ limit: 1000, userId: req.userId, jwt: req.supabaseToken });
       const messages = allMessages.filter((m: any) => {
         const timestamp = m.created_at || m.timestamp;
         return timestamp >= startISO && timestamp < endISO;
       });
       
-      const { data: allActions } = await hybridActionItems.getAll({ limit: 1000, userId: req.userId });
+    const { data: allActions } = await hybridActionItems.getAll({ limit: 1000, userId: req.userId, jwt: req.supabaseToken });
       const completedTasks = allActions.filter((a: any) => {
         const completed = a.completed_at || a.completedAt;
         return completed && completed >= startISO && completed < endISO;

@@ -33,9 +33,10 @@ router.post('/', async (req: Request, res: Response) => {
 
     log.info('AI Search request', `Query: "${query.substring(0, 50)}..."`);
 
-    // Get all messages from store
+    // Get all messages from store (pass JWT so Supabase RLS sees auth.uid())
     const { data: messages } = await hybridMessageStore.getAll({
       userId,
+      jwt: req.supabaseToken,
       limit: 1000 // Get more messages for thorough search
     });
 
@@ -86,9 +87,10 @@ router.get('/person/:name', async (req: Request, res: Response) => {
 
     log.info('Person search request', `Looking for: "${name}"`);
 
-    // Get all messages
+    // Get all messages (pass JWT for RLS)
     const { data: messages } = await hybridMessageStore.getAll({
       userId,
+      jwt: req.supabaseToken,
       limit: 1000
     });
 
@@ -137,9 +139,10 @@ router.get('/meetings', async (req: Request, res: Response) => {
 
     log.info('Meetings search request', 'Finding all meetings and appointments');
 
-    // Get all messages
+    // Get all messages (pass JWT for RLS)
     const { data: messages } = await hybridMessageStore.getAll({
       userId,
+      jwt: req.supabaseToken,
       limit: 1000
     });
 
@@ -174,9 +177,10 @@ router.get('/tasks', async (req: Request, res: Response) => {
 
     log.info('Tasks search request', 'Finding all tasks and action items');
 
-    // Get all messages
+    // Get all messages (pass JWT for RLS)
     const { data: messages } = await hybridMessageStore.getAll({
       userId,
+      jwt: req.supabaseToken,
       limit: 1000
     });
 

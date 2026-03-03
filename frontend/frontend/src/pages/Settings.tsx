@@ -1,13 +1,17 @@
 import { useEffect, useState, useCallback } from 'react'
 import { 
   RefreshCw,
-  Moon,
-  Sun,
   Trash2,
-  Loader2
+  Loader2,
+  Shield,
+  Plus,
+  X,
+  LogOut,
+  Zap
 } from 'lucide-react'
 import clsx from 'clsx'
 import { API_BASE, authFetch } from '../services/api'
+import { useAuth } from '../context/AuthContext'
 
 interface HealthStatus {
   status: string
@@ -24,75 +28,65 @@ interface WhatsAppState {
   user: { name: string; phone: string } | null
 }
 
-function SettingToggle({ 
-  label, 
-  description, 
-  enabled, 
-  onChange 
-}: { 
-  label: string
-  description: string
-  enabled: boolean
-  onChange: (enabled: boolean) => void
-}) {
-  return (
-    <div className="flex items-center justify-between py-3">
-      <div>
-        <p className="text-sm text-[var(--text-primary)]">{label}</p>
-        <p className="text-xs text-[var(--text-muted)]">{description}</p>
-      </div>
-      <button
-        onClick={() => onChange(!enabled)}
-        className={clsx(
-          'w-10 h-5 rounded-full p-0.5 transition-colors',
-          enabled ? 'bg-[var(--text-primary)]' : 'bg-[var(--bg-tertiary)]'
-        )}
-      >
-        <div className={clsx(
-          'w-4 h-4 rounded-full bg-white transition-transform',
-          enabled ? 'translate-x-5' : 'translate-x-0'
-        )} />
-      </button>
-    </div>
-  )
+interface BlockedSender {
+  jid: string
+  display_name: string | null
+  type: string
 }
 
 export default function Settings() {
+  const { logout } = useAuth()
   const [health, setHealth] = useState<HealthStatus | null>(null)
   const [whatsappState, setWhatsappState] = useState<WhatsAppState | null>(null)
   const [loading, setLoading] = useState(true)
-  const [darkMode, setDarkMode] = useState(false)
   const [clearing, setClearing] = useState(false)
-  const [settings, setSettings] = useState({
-    aiEnabled: true,
-    autoStart: true,
-    notifications: true,
-    autoClassify: true
-  })
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
-  const [testing, setTesting] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
+  const [deletingAccount, setDeletingAccount] = useState(false)
 
-  useEffect(() => {
-    const isDark = localStorage.getItem('darkMode') === 'true'
-    setDarkMode(isDark)
-    
-    const savedSettings = localStorage.getItem('appSettings')
-    if (savedSettings) {
-      setSettings(JSON.parse(savedSettings))
-    }
+  // Privacy state
+  const [blockedSenders, setBlockedSenders] = useState<BlockedSender[]>([])
+  const [newJid, setNewJid] = useState('')
+  const [newName, setNewName] = useState('')
+  const [privacyLoading, setPrivacyLoading] = useState(false)
+
+  // ── Privacy helpers ────────────────────────────────────────────────────────
+  const fetchBlockedSenders = useCallback(async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/privacy/blocked`)
+      if (res.ok) setBlockedSenders((await res.json()).data ?? [])
+    } catch { /* ignore */ }
   }, [])
 
-  const saveSettings = (newSettings: typeof settings) => {
-    setSettings(newSettings)
-    localStorage.setItem('appSettings', JSON.stringify(newSettings))
+  const addBlockedSender = async () => {
+    const jid = newJid.trim()
+    if (!jid) return
+    setPrivacyLoading(true)
+    try {
+      const res = await authFetch(`${API_BASE}/privacy/blocked`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jid, display_name: newName.trim() || undefined }),
+      })
+      if (res.ok) {
+        setNewJid('')
+        setNewName('')
+        await fetchBlockedSenders()
+      }
+    } finally {
+      setPrivacyLoading(false)
+    }
   }
 
-  const toggleDarkMode = () => {
-    const newMode = !darkMode
-    setDarkMode(newMode)
-    localStorage.setItem('darkMode', String(newMode))
-    document.documentElement.classList.toggle('dark', newMode)
+  const removeBlockedSender = async (jid: string) => {
+    setPrivacyLoading(true)
+    try {
+      await authFetch(`${API_BASE}/privacy/blocked/${encodeURIComponent(jid)}`, { method: 'DELETE' })
+      await fetchBlockedSenders()
+    } finally {
+      setPrivacyLoading(false)
+    }
   }
+  // ────────────────────────────────────────────────────────────────────────────
 
   const fetchHealth = useCallback(async () => {
     setLoading(true)
@@ -123,57 +117,53 @@ export default function Settings() {
   useEffect(() => {
     fetchHealth()
     fetchWhatsAppStatus()
+    fetchBlockedSenders()
     
     // Poll WhatsApp status every 5 seconds
     const interval = setInterval(fetchWhatsAppStatus, 5000)
     return () => clearInterval(interval)
-  }, [fetchHealth, fetchWhatsAppStatus])
-
-  const testClassification = async () => {
-    setTesting(true)
-    setTestResult(null)
-    try {
-      const res = await authFetch(`${API_BASE}/classify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: 'Meeting tomorrow at 3pm with the team to discuss project' })
-      })
-      const json = await res.json()
-      if (json.success) {
-        setTestResult({
-          success: true,
-          message: `Category: ${json.data.category}, Priority: ${json.data.priority}`
-        })
-      } else {
-        setTestResult({ success: false, message: json.error })
-      }
-    } catch (err: any) {
-      setTestResult({ success: false, message: err.message })
-    } finally {
-      setTesting(false)
-    }
-  }
+  }, [fetchHealth, fetchWhatsAppStatus, fetchBlockedSenders])
 
   const clearAllData = async () => {
     if (!confirm('Are you sure you want to clear all messages and tasks? This cannot be undone.')) return
     
     setClearing(true)
     try {
-      // Clear logs
       await authFetch(`${API_BASE}/logs`, { method: 'DELETE' })
-      
-      // Clear messages
       await authFetch(`${API_BASE}/messages/clear`, { method: 'DELETE' })
-      
-      // Clear action items
       await authFetch(`${API_BASE}/actions/clear`, { method: 'DELETE' })
-      
       alert('All data cleared successfully!')
     } catch (err) {
       console.error('Failed to clear data:', err)
       alert('Failed to clear some data. Check console for details.')
     } finally {
       setClearing(false)
+    }
+  }
+
+  const handleSignOut = async () => {
+    setSigningOut(true)
+    try {
+      await logout()
+    } catch (e) {
+      console.error('Sign out error:', e)
+    } finally {
+      setSigningOut(false)
+    }
+  }
+
+  const handleDeleteAccount = async () => {
+    if (!confirm('Delete your account permanently? All data (messages, tasks, history) will be erased. This cannot be undone.')) return
+    if (!confirm('Are you absolutely sure? This is irreversible.')) return
+    setDeletingAccount(true)
+    try {
+      await authFetch(`${API_BASE}/auth/account`, { method: 'DELETE' })
+      await logout()
+    } catch (e: any) {
+      console.error('Delete account error:', e)
+      alert('Failed to delete account: ' + e.message)
+    } finally {
+      setDeletingAccount(false)
     }
   }
 
@@ -237,86 +227,93 @@ export default function Settings() {
 
       <div className="divider" />
 
-      {/* AI Settings */}
+      {/* AI Status */}
       <section className="mb-8">
         <h2 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wide mb-3">AI Classification</h2>
-        
-        <SettingToggle
-          label="Enable AI"
-          description="Use Gemini AI to classify messages"
-          enabled={settings.aiEnabled}
-          onChange={(v) => saveSettings({ ...settings, aiEnabled: v })}
-        />
-        <SettingToggle
-          label="Auto-classify"
-          description="Automatically classify incoming messages"
-          enabled={settings.autoClassify}
-          onChange={(v) => saveSettings({ ...settings, autoClassify: v })}
-        />
-
-        <button
-          onClick={testClassification}
-          disabled={testing}
-          className="notion-btn text-sm mt-2 flex items-center gap-2"
-        >
-          {testing && <RefreshCw className="w-3 h-3 animate-spin" />}
-          Test Classification
-        </button>
-        
-        {testResult && (
-          <p className={clsx(
-            'text-xs mt-2',
-            testResult.success ? 'text-green-600' : 'text-red-500'
-          )}>
-            {testResult.message}
-          </p>
-        )}
-      </section>
-
-      <div className="divider" />
-
-      {/* Appearance */}
-      <section className="mb-8">
-        <h2 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wide mb-3">Appearance</h2>
-        
-        <div className="flex items-center justify-between py-3">
-          <div className="flex items-center gap-2">
-            {darkMode ? <Moon className="w-4 h-4 text-[var(--text-muted)]" /> : <Sun className="w-4 h-4 text-[var(--text-muted)]" />}
-            <span className="text-sm text-[var(--text-primary)]">Dark Mode</span>
+        <div className="flex items-center gap-2 py-2 px-3 bg-[var(--bg-surface-soft)] rounded-lg">
+          <Zap className="w-4 h-4 text-[var(--accent-primary)] shrink-0" />
+          <div>
+            <p className="text-sm text-[var(--text-primary)]">AI always enabled</p>
+            <p className="text-xs text-[var(--text-muted)]">Gemini AI classifies every message automatically</p>
           </div>
-          <button
-            onClick={toggleDarkMode}
-            className={clsx(
-              'w-10 h-5 rounded-full p-0.5 transition-colors',
-              darkMode ? 'bg-[var(--text-primary)]' : 'bg-[var(--bg-tertiary)]'
-            )}
-          >
-            <div className={clsx(
-              'w-4 h-4 rounded-full bg-white transition-transform',
-              darkMode ? 'translate-x-5' : 'translate-x-0'
-            )} />
-          </button>
         </div>
       </section>
 
       <div className="divider" />
 
+      {/* Privacy */}
+      <section className="mb-8">
+        <div className="flex items-center gap-2 mb-1">
+          <Shield className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+          <h2 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wide">Privacy &amp; Ignored Contacts</h2>
+        </div>
+        <p className="text-xs text-[var(--text-muted)] mb-3">
+          Messages from contacts/groups below are stored privately — no AI classification or task creation.
+        </p>
+
+        {/* Blocked list */}
+        <div className="space-y-1 mb-3">
+          {blockedSenders.length === 0 && (
+            <p className="text-xs text-[var(--text-muted)] italic">No ignored contacts yet.</p>
+          )}
+          {blockedSenders.map((s) => (
+            <div key={s.jid} className="flex items-center justify-between py-1.5 px-2 rounded bg-[var(--bg-secondary)]">
+              <div className="min-w-0">
+                <p className="text-sm text-[var(--text-primary)] truncate">{s.display_name || s.jid}</p>
+                {s.display_name && <p className="text-xs text-[var(--text-muted)] truncate">{s.jid}</p>}
+              </div>
+              <div className="flex items-center gap-2 ml-2 shrink-0">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-muted)]">
+                  {s.type}
+                </span>
+                <button
+                  onClick={() => removeBlockedSender(s.jid)}
+                  disabled={privacyLoading}
+                  className="p-0.5 rounded hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-red-500 transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Add form */}
+        <div className="flex gap-2">
+          <input
+            type="text"
+            placeholder="Phone (+91...) or JID"
+            value={newJid}
+            onChange={(e) => setNewJid(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addBlockedSender()}
+            className="flex-1 min-w-0 text-sm px-2 py-1 rounded border border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:ring-1 focus:ring-[var(--text-muted)]"
+          />
+          <input
+            type="text"
+            placeholder="Name (optional)"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addBlockedSender()}
+            className="w-28 text-sm px-2 py-1 rounded border border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:ring-1 focus:ring-[var(--text-muted)]"
+          />
+          <button
+            onClick={addBlockedSender}
+            disabled={privacyLoading || !newJid.trim()}
+            className="notion-btn flex items-center gap-1 text-sm shrink-0"
+          >
+            {privacyLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+            Add
+          </button>
+        </div>
+      </section>
+
       {/* WhatsApp */}
       <section className="mb-8">
         <h2 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wide mb-3">WhatsApp</h2>
-        
-        <SettingToggle
-          label="Auto-start"
-          description="Connect to WhatsApp when app starts"
-          enabled={settings.autoStart}
-          onChange={(v) => saveSettings({ ...settings, autoStart: v })}
-        />
-        <SettingToggle
-          label="Notifications"
-          description="Get notified when new tasks are created"
-          enabled={settings.notifications}
-          onChange={(v) => saveSettings({ ...settings, notifications: v })}
-        />
+        <div className="flex items-center gap-2 py-2 px-3 bg-[var(--bg-surface-soft)] rounded-lg">
+          <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
+          <p className="text-sm text-[var(--text-primary)]">Auto-connect enabled — WhatsApp reconnects automatically on startup and after disconnections.</p>
+        </div>
       </section>
 
       <div className="divider" />
@@ -325,6 +322,23 @@ export default function Settings() {
       <section>
         <h2 className="text-xs font-medium text-red-500 uppercase tracking-wide mb-3">Danger Zone</h2>
         
+        {/* Sign Out */}
+        <div className="flex items-center justify-between py-3">
+          <div>
+            <p className="text-sm text-[var(--text-primary)]">Sign Out</p>
+            <p className="text-xs text-[var(--text-muted)]">Log out of your account</p>
+          </div>
+          <button
+            onClick={handleSignOut}
+            disabled={signingOut}
+            className="text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] flex items-center gap-1"
+          >
+            {signingOut ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LogOut className="w-3.5 h-3.5" />}
+            {signingOut ? 'Signing out...' : 'Sign Out'}
+          </button>
+        </div>
+
+        {/* Clear Data */}
         <div className="flex items-center justify-between py-3">
           <div>
             <p className="text-sm text-[var(--text-primary)]">Clear All Data</p>
@@ -337,6 +351,22 @@ export default function Settings() {
           >
             {clearing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
             {clearing ? 'Clearing...' : 'Clear'}
+          </button>
+        </div>
+
+        {/* Delete Account */}
+        <div className="flex items-center justify-between py-3">
+          <div>
+            <p className="text-sm text-red-500">Delete Account</p>
+            <p className="text-xs text-[var(--text-muted)]">Permanently erase your account and all data</p>
+          </div>
+          <button
+            onClick={handleDeleteAccount}
+            disabled={deletingAccount}
+            className="text-sm text-red-600 hover:text-red-700 font-medium flex items-center gap-1"
+          >
+            {deletingAccount ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            {deletingAccount ? 'Deleting...' : 'Delete'}
           </button>
         </div>
       </section>
