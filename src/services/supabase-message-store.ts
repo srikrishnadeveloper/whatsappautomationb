@@ -70,7 +70,8 @@ class SupabaseMessageStore {
     if (filters?.decision) countQuery = countQuery.eq('decision', filters.decision);
     if (filters?.priority) countQuery = countQuery.eq('priority', filters.priority);
     if (filters?.search) {
-      countQuery = countQuery.or(`content.ilike.%${filters.search}%,sender.ilike.%${filters.search}%`);
+      // Search across content, sender, AND metadata JSONB (image descriptions, document names, etc.)
+      countQuery = countQuery.or(`content.ilike.%${filters.search}%,sender.ilike.%${filters.search}%,metadata::text.ilike.%${filters.search}%`);
     }
 
     const { count } = await countQuery;
@@ -87,7 +88,8 @@ class SupabaseMessageStore {
     if (filters?.decision) query = query.eq('decision', filters.decision);
     if (filters?.priority) query = query.eq('priority', filters.priority);
     if (filters?.search) {
-      query = query.or(`content.ilike.%${filters.search}%,sender.ilike.%${filters.search}%`);
+      // Search across content, sender, AND metadata JSONB (image descriptions, document names, etc.)
+      query = query.or(`content.ilike.%${filters.search}%,sender.ilike.%${filters.search}%,metadata::text.ilike.%${filters.search}%`);
     }
 
     const { data, error } = await query;

@@ -176,6 +176,172 @@ ${caption ? `\nCaption from sender: "${caption}"` : ''}`;
 }
 
 // ============================================
+// GEMINI DOCUMENT ANALYSIS — PDF / text docs
+// ============================================
+
+/** Result from analyzing a document with Gemini */
+export interface DocumentAnalysisResult {
+  summary: string;            // Short summary of the document
+  extractedText: string;      // Key text/data from the document
+  combinedContent: string;    // Combined text for classification
+  hasActionableContent: boolean;
+  suggestedCategory: string;
+  documentType: string;       // e.g. "invoice", "assignment", "report", "notes"
+  keyEntities: string[];      // Names, dates, amounts, etc.
+}
+
+/**
+ * Analyze a document buffer via Gemini.
+ * Only works for text-based documents (PDF, DOCX-ish, TXT, CSV, etc.)
+ * Large images inside PDFs are skipped — this is text extraction.
+ */
+export async function analyzeDocumentWithGemini(
+  docBuffer: Buffer,
+  mimeType: string,
+  fileName: string
+): Promise<DocumentAnalysisResult> {
+  const fallback: DocumentAnalysisResult = {
+    summary: `Document: ${fileName}`,
+    extractedText: '',
+    combinedContent: `[Document: ${fileName}]`,
+    hasActionableContent: false,
+    suggestedCategory: 'casual',
+    documentType: 'unknown',
+    keyEntities: [],
+  };
+
+  // Only attempt analysis for supported MIME types
+  const supportedTypes = [
+    'application/pdf',
+    'text/plain',
+    'text/csv',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/msword',
+    'application/json',
+    'text/html',
+    'text/markdown',
+  ];
+
+  if (!visionModel) {
+    clog.logFallback('Vision model not initialized — skipping document analysis');
+    return fallback;
+  }
+
+  // Skip very large documents (>5 MB text analysis is unreliable)
+  if (docBuffer.length > 5 * 1024 * 1024) {
+    log.info('📄 Document too large for AI analysis', `${(docBuffer.length / 1024 / 1024).toFixed(1)} MB — skipping`);
+    return fallback;
+  }
+
+  const isSupported = supportedTypes.some(t => mimeType.startsWith(t.split('/')[0]) || mimeType === t);
+  // For PDFs, send as inline data (Gemini supports PDF natively)
+  // For text files, send raw text content
+  const isPDF = mimeType === 'application/pdf';
+
+  try {
+    let prompt: string;
+    let parts: any[];
+
+    if (isPDF) {
+      // Gemini 2.0 flash supports PDF as inline data
+      const base64 = docBuffer.toString('base64');
+      parts = [
+        {
+          inlineData: {
+            data: base64,
+            mimeType: 'application/pdf',
+          },
+        } as any,
+      ];
+      prompt = `Analyze this PDF document and return ONLY JSON (no markdown):
+{
+  "summary": "2-3 sentence summary of the document",
+  "extractedText": "ALL key text: names, dates, deadlines, amounts, action items — exact as written. Max 1000 chars.",
+  "hasActionableContent": true/false,
+  "suggestedCategory": "work|study|personal|urgent|casual|spam",
+  "documentType": "invoice|assignment|report|notes|letter|form|schedule|presentation|spreadsheet|other",
+  "keyEntities": ["entity1", "entity2"]
+}
+Rules:
+- extractedText must capture every deadline, name, amount, date, task
+- keyEntities = important names, dates, amounts, headings
+- hasActionableContent = true if document contains tasks, deadlines, things to do
+- Be thorough — this text will be used for search later`;
+    } else if (isSupported || mimeType.startsWith('text/')) {
+      // For text files, convert buffer to string
+      const textContent = docBuffer.toString('utf-8').slice(0, 8000); // Truncate for token safety
+      parts = [];
+      prompt = `Analyze this document content and return ONLY JSON (no markdown):
+
+DOCUMENT NAME: ${fileName}
+DOCUMENT CONTENT:
+${textContent}
+
+{
+  "summary": "2-3 sentence summary of the document",
+  "extractedText": "ALL key text: names, dates, deadlines, amounts, action items — exact as written. Max 1000 chars.",
+  "hasActionableContent": true/false,
+  "suggestedCategory": "work|study|personal|urgent|casual|spam",
+  "documentType": "invoice|assignment|report|notes|letter|form|schedule|presentation|spreadsheet|other",
+  "keyEntities": ["entity1", "entity2"]
+}
+Rules:
+- extractedText must capture every deadline, name, amount, date, task
+- keyEntities = important names, dates, amounts, headings
+- hasActionableContent = true if document contains tasks, deadlines, things to do`;
+    } else {
+      // Unsupported type — return just filename-based fallback
+      return fallback;
+    }
+
+    const result = await visionModel.generateContent(parts.length > 0 ? [prompt, ...parts] : [prompt]);
+    const response = await result.response;
+    const text = response.text();
+
+    visionCallCount++;
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      log.warning('Gemini Document analysis unparseable', text.slice(0, 200));
+      return { ...fallback, summary: text.slice(0, 300), combinedContent: `[Document: ${fileName}] ${text.slice(0, 200)}` };
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    const summary: string       = parsed.summary || '';
+    const extractedText: string = parsed.extractedText || '';
+    const hasActionable: boolean = !!parsed.hasActionableContent;
+    const suggestedCat: string  = parsed.suggestedCategory || 'casual';
+    const documentType: string  = parsed.documentType || 'other';
+    const keyEntities: string[] = parsed.keyEntities || [];
+
+    const combinedParts: string[] = [];
+    combinedParts.push(`Document: ${fileName}`);
+    if (summary) combinedParts.push(`Summary: ${summary}`);
+    if (extractedText) combinedParts.push(`Content: ${extractedText}`);
+    const combinedContent = combinedParts.join('\n');
+
+    log.success('📄 Document analyzed',
+      `${fileName} | type=${documentType} | actionable=${hasActionable} | entities=${keyEntities.length} [vision #${visionCallCount}]`);
+
+    return {
+      summary,
+      extractedText,
+      combinedContent,
+      hasActionableContent: hasActionable,
+      suggestedCategory: suggestedCat,
+      documentType,
+      keyEntities,
+    };
+  } catch (error: any) {
+    clog.logPipelineError('Gemini Document', error.message);
+    log.warning('Gemini Document analysis failed', error.message);
+    return fallback;
+  }
+}
+
+// ============================================
 // ENHANCED AI PROMPT (token-optimised)
 // ============================================
 
