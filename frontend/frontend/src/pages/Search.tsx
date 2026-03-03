@@ -17,7 +17,13 @@ import {
   CheckCircle2,
   Users,
   ListTodo,
-  RefreshCw
+  RefreshCw,
+  Image,
+  FileText,
+  Video,
+  Mic,
+  Download,
+  Paperclip
 } from 'lucide-react'
 import clsx from 'clsx'
 import { API_BASE, authFetch } from '../services/api'
@@ -30,6 +36,13 @@ interface SearchResult {
   timestamp: string
   relevanceScore: number
   matchReason: string
+  // Media-aware fields
+  mediaType?: string | null
+  messageKey?: string | null
+  hasMedia?: boolean
+  documentName?: string | null
+  imageDescription?: string | null
+  documentSummary?: string | null
 }
 
 interface AISearchResponse {
@@ -45,6 +58,7 @@ const QUICK_SEARCHES = [
   { icon: ListTodo, label: 'Tasks', query: 'Find all tasks, to-do items, and deadlines' },
   { icon: Users, label: 'Important', query: 'Find important or urgent conversations' },
   { icon: Clock, label: 'Reminders', query: 'Find all reminders and things I need to remember' },
+  { icon: Paperclip, label: 'Files & Media', query: 'Find all images, documents, files, and media shared in messages' },
 ]
 
 export default function SearchPage() {
@@ -132,6 +146,47 @@ export default function SearchPage() {
     setError(null)
     setQuery('')
     setPersonSearch('')
+  }
+
+  /** Download media file from the backend cache */
+  const handleMediaDownload = async (messageKey: string, fileName?: string) => {
+    try {
+      const res = await authFetch(`${API_BASE}/whatsapp/media/${messageKey}`)
+      if (!res.ok) throw new Error('Media not available')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName || `media_${messageKey}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      // Media may have been evicted from cache
+      alert('Media file is no longer available in cache.')
+    }
+  }
+
+  /** Get the icon component for a media type */
+  const getMediaIcon = (mediaType: string | null | undefined) => {
+    switch (mediaType) {
+      case 'image': return Image
+      case 'video': return Video
+      case 'audio': return Mic
+      case 'document': return FileText
+      default: return MessageSquare
+    }
+  }
+
+  /** Get display label for media type */
+  const getMediaLabel = (mediaType: string | null | undefined) => {
+    switch (mediaType) {
+      case 'image': return 'Image'
+      case 'video': return 'Video'
+      case 'audio': return 'Audio'
+      case 'document': return 'Document'
+      case 'sticker': return 'Sticker'
+      default: return 'Message'
+    }
   }
 
   const formatTimestamp = (ts: string) => {
@@ -377,7 +432,9 @@ export default function SearchPage() {
                     </h3>
                   </div>
                   <div className="divide-y divide-[var(--border-subtle)] max-h-[400px] overflow-y-auto">
-                    {response.results.map((result, i) => (
+                    {response.results.map((result, i) => {
+                      const MediaIcon = getMediaIcon(result.mediaType)
+                      return (
                       <div key={i} className="p-4 hover:bg-[var(--bg-surface-soft)] transition-colors">
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
@@ -388,16 +445,77 @@ export default function SearchPage() {
                               <span className="text-sm font-medium text-[var(--text-primary)]">{result.sender}</span>
                               <span className="text-xs text-[var(--text-muted)] ml-2">in {result.chatName}</span>
                             </div>
+                            {/* Media type badge */}
+                            {result.hasMedia && (
+                              <span className={clsx(
+                                'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium',
+                                result.mediaType === 'image' ? 'bg-blue-50 text-blue-600 border border-blue-200' :
+                                result.mediaType === 'video' ? 'bg-purple-50 text-purple-600 border border-purple-200' :
+                                result.mediaType === 'audio' ? 'bg-green-50 text-green-600 border border-green-200' :
+                                result.mediaType === 'document' ? 'bg-amber-50 text-amber-600 border border-amber-200' :
+                                'bg-gray-50 text-gray-600 border border-gray-200'
+                              )}>
+                                <MediaIcon className="w-3 h-3" />
+                                {getMediaLabel(result.mediaType)}
+                              </span>
+                            )}
                           </div>
-                          <span className="text-xs text-[var(--text-muted)] font-mono">{formatTimestamp(result.timestamp)}</span>
+                          <div className="flex items-center gap-2">
+                            {/* Download button for media */}
+                            {result.hasMedia && result.messageKey && (
+                              <button
+                                onClick={() => handleMediaDownload(result.messageKey!, result.documentName || undefined)}
+                                className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-[var(--accent-primary)] bg-[var(--accent-light)] rounded-md hover:opacity-80 transition-opacity"
+                                title="Download media"
+                              >
+                                <Download className="w-3 h-3" />
+                                Download
+                              </button>
+                            )}
+                            <span className="text-xs text-[var(--text-muted)] font-mono">{formatTimestamp(result.timestamp)}</span>
+                          </div>
                         </div>
-                        <p className="text-sm text-[var(--text-secondary)] mb-2">{result.content}</p>
+
+                        {/* Document name */}
+                        {result.documentName && (
+                          <div className="flex items-center gap-1.5 mb-1.5 text-xs text-[var(--text-secondary)]">
+                            <FileText className="w-3.5 h-3.5 text-amber-500" />
+                            <span className="font-medium">{result.documentName}</span>
+                          </div>
+                        )}
+
+                        {/* Message content */}
+                        <p className="text-sm text-[var(--text-secondary)] mb-2">{result.content.length > 300 ? result.content.slice(0, 300) + '…' : result.content}</p>
+
+                        {/* Image description (if image was classified by AI) */}
+                        {result.imageDescription && (
+                          <div className="mb-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-lg">
+                            <div className="flex items-center gap-1 mb-1">
+                              <Image className="w-3 h-3 text-blue-500" />
+                              <span className="text-[10px] font-medium text-blue-600 uppercase tracking-wide">AI Image Description</span>
+                            </div>
+                            <p className="text-xs text-blue-800">{result.imageDescription.length > 200 ? result.imageDescription.slice(0, 200) + '…' : result.imageDescription}</p>
+                          </div>
+                        )}
+
+                        {/* Document summary (if document was analyzed by AI) */}
+                        {result.documentSummary && (
+                          <div className="mb-2 px-3 py-2 bg-amber-50 border border-amber-100 rounded-lg">
+                            <div className="flex items-center gap-1 mb-1">
+                              <FileText className="w-3 h-3 text-amber-500" />
+                              <span className="text-[10px] font-medium text-amber-600 uppercase tracking-wide">Document Summary</span>
+                            </div>
+                            <p className="text-xs text-amber-800">{result.documentSummary.length > 200 ? result.documentSummary.slice(0, 200) + '…' : result.documentSummary}</p>
+                          </div>
+                        )}
+
                         <p className="text-xs text-[var(--accent-primary)] flex items-center gap-1">
                           <Sparkles className="w-3 h-3" />
                           {result.matchReason}
                         </p>
                       </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )}

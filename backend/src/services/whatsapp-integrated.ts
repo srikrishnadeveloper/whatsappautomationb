@@ -23,7 +23,7 @@ import pino from 'pino';
 import { updateWhatsAppState, getWhatsAppState } from '../routes/whatsapp';
 import { hybridMessageStore } from './hybrid-message-store';
 import { hybridActionItems } from './hybrid-action-items';
-import { classifyWithAI, initGemini, analyzeImageWithGemini } from './ai-classifier';
+import { classifyWithAI, initGemini, analyzeImageWithGemini, analyzeDocumentWithGemini } from './ai-classifier';
 import { isSenderBlocked } from './privacy-settings';
 import { useSupabaseAuthState } from './supabase-auth-state';
 import log from './activity-log';
@@ -493,6 +493,7 @@ async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> 
 
     // ── Image → Gemini Vision pipeline ────────────────────────────────────
     let imageAnalysis: Awaited<ReturnType<typeof analyzeImageWithGemini>> | null = null;
+    let documentAnalysis: Awaited<ReturnType<typeof analyzeDocumentWithGemini>> | null = null;
 
     if (isImage && whatsappSocket) {
       try {
@@ -572,7 +573,19 @@ async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> 
             mediaType: mediaTypeLabel as MediaCacheEntry['mediaType'],
           });
           log.info(`📦 ${mediaTypeLabel} cached`, `${fileName} (${(buf.length / 1024).toFixed(1)} KB)`);
-        }
+
+          // ── Document → Gemini analysis pipeline ──────────────────────────
+          if (isDocument) {
+            try {
+              documentAnalysis = await analyzeDocumentWithGemini(buf, mimeType, fileName);
+              content = documentAnalysis.combinedContent;
+              log.success('📄 Document analyzed',
+                `summary="${documentAnalysis.summary.slice(0, 60)}" | text="${documentAnalysis.extractedText.slice(0, 60)}"`);
+            } catch (docAnalysisErr: any) {
+              log.warning('📄 Document analysis failed', docAnalysisErr.message);
+              // Keep the default content (document name placeholder)
+            }
+          }        }
       } catch (mediaErr: any) {
         log.warning('📦 Media cache failed', mediaErr.message);
       }
@@ -643,6 +656,17 @@ async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> 
         } : {}),
         // Document metadata (present only for document messages)
         ...(docMeta ? { document: docMeta } : {}),
+        // Document analysis data (present only for analyzed documents)
+        ...(documentAnalysis ? {
+          documentAnalysis: {
+            summary:            documentAnalysis.summary,
+            extractedText:      documentAnalysis.extractedText,
+            hasActionable:      documentAnalysis.hasActionableContent,
+            suggestedCategory:  documentAnalysis.suggestedCategory,
+            documentType:       documentAnalysis.documentType,
+            keyEntities:        documentAnalysis.keyEntities,
+          }
+        } : {}),
       }
     };
 
