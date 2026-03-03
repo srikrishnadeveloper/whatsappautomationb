@@ -4,32 +4,49 @@ Mindline is a unified inbox that merges **WhatsApp** and **Gmail** messages, cla
 
 ---
 
-## Repository Layout
+## Repositories
+
+| Repo | URL | Purpose |
+|---|---|---|
+| **Backend** | `github.com/srikrishnadeveloper/whatsappautomationb` | Node.js/TypeScript API server |
+| **Frontend** | `github.com/srikrishnadeveloper/whatsappautomation` | React/Vite web app |
+
+These are **two separate repositories**. Clone and develop them independently.
+
+---
+
+## Backend Repository Layout
 
 ```
-Whatsapp/                        ← git root (monorepo)
-├── backend/                     ← Node.js/TypeScript API server
-│   ├── src/
-│   │   ├── index.ts             ← Express app, route registration, startup
-│   │   ├── routes/              ← One file per feature area
-│   │   ├── services/            ← Business logic, external integrations
-│   │   ├── middleware/          ← Auth guards (Supabase JWT)
-│   │   ├── classifier/          ← Rule-based + Gemini + ML classifiers
-│   │   └── config/              ← supabase.ts (client singleton)
-│   ├── database/
-│   │   ├── schema.sql           ← Full DDL for all tables
-│   │   └── migrations/          ← Numbered SQL migration files
-│   └── _IGNORE_session/         ← Baileys browser session (never commit real content)
-└── frontend/
-    ├── frontend/                ← Vite/React app (the actual UI)
-    │   └── src/
-    │       ├── App.tsx          ← Routes (React Router v6)
-    │       ├── components/      ← Layout.tsx (sidebar nav)
-    │       ├── context/         ← AuthContext.tsx (Supabase session)
-    │       ├── pages/           ← Dashboard, Tasks, Connect, Settings, Summary, Login, Register
-    │       ├── services/        ← api.ts (all fetch calls, authFetch helper)
-    │       └── utils/           ← formatContact.ts, etc.
-    └── backend/                 ← Mirror of root backend (keep in sync)
+(repo root)                      ← whatsappautomationb
+├── src/
+│   ├── index.ts                 ← Express app, route registration, startup
+│   ├── routes/                  ← One file per feature area
+│   ├── services/                ← Business logic, external integrations
+│   ├── middleware/              ← Auth guards (Supabase JWT)
+│   ├── classifier/              ← Rule-based + Gemini + ML classifiers
+│   └── config/                  ← supabase.ts (client singleton)
+├── database/
+│   ├── schema.sql               ← Full DDL for all tables
+│   └── migrations/              ← Numbered SQL migration files
+├── _IGNORE_session/             ← Baileys browser session (never commit real content)
+└── package.json
+```
+
+## Frontend Repository Layout
+
+```
+(repo root)                      ← whatsappautomation
+├── frontend/                    ← Vite/React app (the actual UI)
+│   └── src/
+│       ├── App.tsx              ← Routes (React Router v6)
+│       ├── components/          ← Layout.tsx (sidebar nav)
+│       ├── context/             ← AuthContext.tsx (Supabase session)
+│       ├── pages/               ← Dashboard, Tasks, Connect, Settings, Summary, Login, Register
+│       ├── services/            ← api.ts (all fetch calls, authFetch helper)
+│       └── utils/               ← formatContact.ts, etc.
+├── PROJECT_OVERVIEW.md
+└── README.md
 ```
 
 ---
