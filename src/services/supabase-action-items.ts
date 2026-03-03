@@ -4,7 +4,7 @@
  * Every operation requires a userId for data isolation
  */
 
-import { getSupabaseClient } from '../config/supabase';
+import { getSupabaseClient, createAuthenticatedClient } from '../config/supabase';
 import log from './activity-log';
 import { EventEmitter } from 'events';
 
@@ -27,6 +27,8 @@ export interface ActionItem {
   updatedAt: string;
   completedAt: string | null;
   userId?: string;
+  source?: 'whatsapp' | 'gmail';
+  gmailMessageId?: string | null;
 }
 
 export interface ActionItemStats {
@@ -53,8 +55,8 @@ export interface ActionItemStats {
 }
 
 class SupabaseActionItemsService extends EventEmitter {
-  private get db() {
-    return getSupabaseClient();
+  private getDb(jwt?: string) {
+    return jwt ? createAuthenticatedClient(jwt) : getSupabaseClient();
   }
 
   constructor() {
@@ -74,7 +76,8 @@ class SupabaseActionItemsService extends EventEmitter {
       suggestedTask?: string;
       deadline?: string;
     },
-    userId?: string
+    userId?: string,
+    jwt?: string
   ): Promise<ActionItem | null> {
     if (classification.decision === 'ignore') return null;
 
@@ -106,7 +109,7 @@ class SupabaseActionItemsService extends EventEmitter {
       completed_at: null,
     };
 
-    const { data, error } = await this.db
+    const { data, error } = await this.getDb(jwt)
       .from('action_items')
       .insert(row)
       .select()
@@ -127,7 +130,7 @@ class SupabaseActionItemsService extends EventEmitter {
   }
 
   // Create action item manually
-  async create(itemData: Partial<ActionItem> & { title: string }, userId?: string): Promise<ActionItem> {
+  async create(itemData: Partial<ActionItem> & { title: string }, userId?: string, jwt?: string): Promise<ActionItem> {
     const row = {
       user_id: userId || null,
       message_id: itemData.messageId || null,
@@ -146,7 +149,7 @@ class SupabaseActionItemsService extends EventEmitter {
       completed_at: null,
     };
 
-    const { data, error } = await this.db
+    const { data, error } = await this.getDb(jwt)
       .from('action_items')
       .insert(row)
       .select()
@@ -160,8 +163,8 @@ class SupabaseActionItemsService extends EventEmitter {
   }
 
   // Get single action item
-  async get(id: string, userId?: string): Promise<ActionItem | undefined> {
-    let query = this.db.from('action_items').select('*').eq('id', id);
+  async get(id: string, userId?: string, jwt?: string): Promise<ActionItem | undefined> {
+    let query = this.getDb(jwt).from('action_items').select('*').eq('id', id);
     if (userId) query = query.eq('user_id', userId);
 
     const { data, error } = await query.single();
@@ -180,12 +183,13 @@ class SupabaseActionItemsService extends EventEmitter {
     limit?: number;
     offset?: number;
     userId?: string;
+    jwt?: string;
   }): Promise<{ data: ActionItem[]; total: number }> {
     const limit = filters?.limit || 50;
     const offset = filters?.offset || 0;
 
     // Count query
-    let countQuery = this.db.from('action_items').select('*', { count: 'exact', head: true });
+    let countQuery = this.getDb(filters?.jwt).from('action_items').select('*', { count: 'exact', head: true });
     if (filters?.userId) countQuery = countQuery.eq('user_id', filters.userId);
     if (filters?.status) countQuery = countQuery.eq('status', filters.status);
     if (filters?.priority) countQuery = countQuery.eq('priority', filters.priority);
@@ -199,7 +203,7 @@ class SupabaseActionItemsService extends EventEmitter {
     const { count } = await countQuery;
 
     // Data query
-    let query = this.db
+    let query = this.getDb(filters?.jwt)
       .from('action_items')
       .select('*')
       .order('created_at', { ascending: false })
@@ -225,7 +229,7 @@ class SupabaseActionItemsService extends EventEmitter {
   }
 
   // Update action item
-  async update(id: string, updates: Partial<ActionItem>, userId?: string): Promise<ActionItem | null> {
+  async update(id: string, updates: Partial<ActionItem>, userId?: string, jwt?: string): Promise<ActionItem | null> {
     const updateData: any = { updated_at: new Date().toISOString() };
     if (updates.title !== undefined) updateData.title = updates.title;
     if (updates.description !== undefined) updateData.description = updates.description;
@@ -237,7 +241,7 @@ class SupabaseActionItemsService extends EventEmitter {
     if (updates.tags !== undefined) updateData.tags = updates.tags;
     if (updates.completedAt !== undefined) updateData.completed_at = updates.completedAt;
 
-    let query = this.db.from('action_items').update(updateData).eq('id', id);
+    let query = this.getDb(jwt).from('action_items').update(updateData).eq('id', id);
     if (userId) query = query.eq('user_id', userId);
 
     const { data, error } = await query.select().single();
@@ -249,13 +253,13 @@ class SupabaseActionItemsService extends EventEmitter {
   }
 
   // Mark complete
-  async complete(id: string, userId?: string): Promise<ActionItem | null> {
-    return this.update(id, { status: 'completed', completedAt: new Date().toISOString() }, userId);
+  async complete(id: string, userId?: string, jwt?: string): Promise<ActionItem | null> {
+    return this.update(id, { status: 'completed', completedAt: new Date().toISOString() }, userId, jwt);
   }
 
   // Delete action item
-  async delete(id: string, userId?: string): Promise<boolean> {
-    let query = this.db.from('action_items').delete().eq('id', id);
+  async delete(id: string, userId?: string, jwt?: string): Promise<boolean> {
+    let query = this.getDb(jwt).from('action_items').delete().eq('id', id);
     if (userId) query = query.eq('user_id', userId);
 
     const { error } = await query;
@@ -264,8 +268,8 @@ class SupabaseActionItemsService extends EventEmitter {
   }
 
   // Get statistics for a user
-  async getStats(userId?: string): Promise<ActionItemStats> {
-    let query = this.db.from('action_items').select('status, priority, category, due_date');
+  async getStats(userId?: string, jwt?: string): Promise<ActionItemStats> {
+    let query = this.getDb(jwt).from('action_items').select('status, priority, category, due_date');
     if (userId) query = query.eq('user_id', userId);
 
     const { data, error } = await query;
@@ -313,8 +317,8 @@ class SupabaseActionItemsService extends EventEmitter {
   }
 
   // Clear all action items for a specific user
-  async clear(userId: string): Promise<void> {
-    const { error } = await this.db.from('action_items').delete().eq('user_id', userId);
+  async clear(userId: string, jwt?: string): Promise<void> {
+    const { error } = await this.getDb(jwt).from('action_items').delete().eq('user_id', userId);
     if (error) throw new Error(`Clear failed: ${error.message}`);
   }
 
@@ -379,6 +383,8 @@ class SupabaseActionItemsService extends EventEmitter {
       updatedAt: row.updated_at,
       completedAt: row.completed_at,
       userId: row.user_id,
+      source: row.source || 'whatsapp',
+      gmailMessageId: row.gmail_message_id || null,
     };
   }
 }

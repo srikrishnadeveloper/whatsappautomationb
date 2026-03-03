@@ -30,7 +30,7 @@ router.get('/stream', async (req: Request, res: Response) => {
   res.write(`event: connected\ndata: ${JSON.stringify({ timestamp: new Date().toISOString() })}\n\n`);
 
   try {
-    const stats = await hybridActionItems.getStats(req.userId);
+    const stats = await hybridActionItems.getStats(req.userId, req.supabaseToken);
     res.write(`event: stats\ndata: ${JSON.stringify(stats)}\n\n`);
   } catch (error) {
     console.error('Error getting stats for SSE:', error);
@@ -62,7 +62,8 @@ router.get('/', async (req: Request, res: Response) => {
       dueAfter: dueAfter as string,
       limit: limit ? parseInt(limit as string) : undefined,
       offset: offset ? parseInt(offset as string) : undefined,
-      userId: req.userId
+      userId: req.userId,
+      jwt: req.supabaseToken
     });
 
     res.json({ success: true, data: result.data, total: result.total, filters: { status, priority, category, search }, storage: hybridActionItems.getStorageType() });
@@ -75,7 +76,7 @@ router.get('/', async (req: Request, res: Response) => {
 // Get stats
 router.get('/stats', async (req: Request, res: Response) => {
   try {
-    const stats = await hybridActionItems.getStats(req.userId);
+    const stats = await hybridActionItems.getStats(req.userId, req.supabaseToken);
     res.json({ success: true, data: stats, storage: hybridActionItems.getStorageType() });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
@@ -85,7 +86,7 @@ router.get('/stats', async (req: Request, res: Response) => {
 // Get single action item
 router.get('/:id', async (req: Request, res: Response) => {
   try {
-    const item = await hybridActionItems.get(req.params.id, req.userId);
+    const item = await hybridActionItems.get(req.params.id, req.userId, req.supabaseToken);
     if (!item) return res.status(404).json({ success: false, error: 'Action item not found' });
     res.json({ success: true, data: item, storage: hybridActionItems.getStorageType() });
   } catch (error: any) {
@@ -110,7 +111,7 @@ router.post('/', async (req: Request, res: Response) => {
       sender: 'Manual', chatName: null,
       originalMessage: description || title,
       aiConfidence: null, status: 'pending', completedAt: null
-    }, req.userId);
+    }, req.userId, req.supabaseToken);
 
     broadcast('created', item);
     res.status(201).json({ success: true, data: item, storage: hybridActionItems.getStorageType() });
@@ -122,7 +123,7 @@ router.post('/', async (req: Request, res: Response) => {
 // Update action item
 router.patch('/:id', async (req: Request, res: Response) => {
   try {
-    const item = await hybridActionItems.update(req.params.id, req.body, req.userId);
+    const item = await hybridActionItems.update(req.params.id, req.body, req.userId, req.supabaseToken);
     if (!item) return res.status(404).json({ success: false, error: 'Action item not found' });
     broadcast('updated', item);
     res.json({ success: true, data: item, storage: hybridActionItems.getStorageType() });
@@ -134,7 +135,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
 // Complete action item
 router.post('/:id/complete', async (req: Request, res: Response) => {
   try {
-    const item = await hybridActionItems.complete(req.params.id, req.userId);
+    const item = await hybridActionItems.complete(req.params.id, req.userId, req.supabaseToken);
     if (!item) return res.status(404).json({ success: false, error: 'Action item not found' });
     broadcast('updated', item);
     res.json({ success: true, data: item, storage: hybridActionItems.getStorageType() });
@@ -146,7 +147,7 @@ router.post('/:id/complete', async (req: Request, res: Response) => {
 // Delete action item
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
-    const success = await hybridActionItems.delete(req.params.id, req.userId);
+    const success = await hybridActionItems.delete(req.params.id, req.userId, req.supabaseToken);
     if (!success) return res.status(404).json({ success: false, error: 'Action item not found' });
     broadcast('deleted', { id: req.params.id });
     res.json({ success: true, message: 'Action item deleted' });
@@ -164,7 +165,7 @@ router.post('/bulk/complete', async (req: Request, res: Response) => {
     const completed: string[] = [];
     const failed: string[] = [];
     for (const id of ids) {
-      const result = await hybridActionItems.complete(id, req.userId);
+      const result = await hybridActionItems.complete(id, req.userId, req.supabaseToken);
       if (result) { completed.push(id); broadcast('updated', result); }
       else { failed.push(id); }
     }
@@ -183,8 +184,7 @@ router.post('/bulk/delete', async (req: Request, res: Response) => {
     const deleted: string[] = [];
     const failed: string[] = [];
     for (const id of ids) {
-      const result = await hybridActionItems.delete(id, req.userId);
-      if (result) { deleted.push(id); broadcast('deleted', { id }); }
+      const result = await hybridActionItems.delete(id, req.userId, req.supabaseToken);      if (result) { deleted.push(id); broadcast('deleted', { id }); }
       else { failed.push(id); }
     }
     res.json({ success: true, deleted, failed });
@@ -196,7 +196,7 @@ router.post('/bulk/delete', async (req: Request, res: Response) => {
 // Clear all action items
 router.delete('/clear', async (req: Request, res: Response) => {
   try {
-    const count = await hybridActionItems.clearAll(req.userId);
+    const count = await hybridActionItems.clearAll(req.userId, req.supabaseToken);
     broadcast('cleared', { count });
     res.json({ success: true, message: `Cleared ${count} action items`, count, storage: hybridActionItems.getStorageType() });
   } catch (error: any) {

@@ -6,6 +6,8 @@
 
 import { Router, Request, Response } from 'express';
 import { EventEmitter } from 'events';
+import { subscribeToLogs, unsubscribeFromLogs } from '../services/console-logger';
+import { getMediaFromCache } from '../services/whatsapp-integrated';
 
 const router = Router();
 
@@ -13,7 +15,7 @@ const router = Router();
 let startWhatsAppFn: ((force?: boolean) => Promise<void>) | null = null;
 let stopWhatsAppFn: (() => Promise<void>) | null = null;
 let logoutWhatsAppFn: (() => Promise<void>) | null = null;
-let setSessionOwnerFn: ((userId: string) => void) | null = null;
+let setSessionOwnerFn: ((userId: string, jwt?: string) => void) | null = null;
 let getSessionOwnerFn: (() => string | null) | null = null;
 
 // Set the WhatsApp functions (called from index.ts after import)
@@ -21,7 +23,7 @@ export function setWhatsAppFunctions(
   start: (force?: boolean) => Promise<void>,
   stop: () => Promise<void>,
   logout?: () => Promise<void>,
-  setOwner?: (userId: string) => void,
+  setOwner?: (userId: string, jwt?: string) => void,
   getOwner?: () => string | null
 ) {
   startWhatsAppFn = start;
@@ -130,9 +132,9 @@ router.post('/start', async (req: Request, res: Response) => {
     });
   }
 
-  // Set session owner
+  // Set session owner WITH the user's Supabase JWT so WA message writes can satisfy RLS
   if (setSessionOwnerFn && req.userId) {
-    setSessionOwnerFn(req.userId);
+    setSessionOwnerFn(req.userId, req.supabaseToken);
   }
 
   // Actually start WhatsApp with force=true since this is user-initiated
@@ -276,6 +278,21 @@ router.get('/qr-image', async (req: Request, res: Response) => {
 });
 
 // GET /api/whatsapp/events - SSE for real-time updates
+// GET /api/whatsapp/logs   - SSE stream of every console log line
+router.get('/logs', (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.write(`data: ${JSON.stringify({ line: '── log stream connected ──\n' })}\n\n`);
+  subscribeToLogs(res);
+  const heartbeat = setInterval(() => {
+    try { res.write(`: heartbeat\n\n`); } catch { clearInterval(heartbeat); unsubscribeFromLogs(res); }
+  }, 25000);
+  req.on('close', () => { clearInterval(heartbeat); unsubscribeFromLogs(res); });
+});
+
+// GET /api/whatsapp/events - SSE for real-time updates
 router.get('/events', (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -303,6 +320,28 @@ router.get('/events', (req: Request, res: Response) => {
     clearInterval(heartbeat);
     sseClients.delete(res);
   });
+});
+
+// GET /api/whatsapp/media/:messageKey - Stream a cached media buffer to the client
+router.get('/media/:messageKey', (req: Request, res: Response) => {
+  const { messageKey } = req.params;
+  const entry = getMediaFromCache(messageKey);
+
+  if (!entry) {
+    return res.status(404).json({
+      success: false,
+      error: 'Media not found in cache. It may have been received before this server session, or was too large to cache.'
+    });
+  }
+
+  // Safe filename — strip any path traversal chars
+  const safeName = entry.fileName.replace(/[^a-zA-Z0-9._\- ]/g, '_');
+
+  res.setHeader('Content-Type', entry.mimeType);
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+  res.setHeader('Content-Length', entry.size.toString());
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.send(entry.buffer);
 });
 
 export default router;

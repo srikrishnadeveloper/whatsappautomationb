@@ -56,12 +56,11 @@ class SystemStateService {
       const db = getSupabaseClient();
       const stateKey = `system_state_${this.userId}`;
       
-      // Try to read existing state from whatsapp_sessions
+      // Try to read existing state from the dedicated system_state table
       const { data: existing } = await db
-        .from('whatsapp_sessions')
+        .from('system_state')
         .select('value, updated_at')
-        .eq('session_id', stateKey)
-        .eq('key', 'heartbeat')
+        .eq('key', stateKey)
         .single();
 
       const now = new Date();
@@ -69,18 +68,23 @@ class SystemStateService {
       let offlineSince: Date | null = null;
       let offlineDuration = 0;
 
-      if (existing?.value) {
+      // value is stored as JSON TEXT — parse it
+      const existingValue = existing?.value
+        ? (typeof existing.value === 'string' ? JSON.parse(existing.value) : existing.value)
+        : null;
+
+      if (existingValue) {
         // Use the most precise timestamp available:
         // 1. lastDisconnectTimestamp (set on connection close — ms precision)
         // 2. lastActiveTimestamp (heartbeat — 30s precision)
         // 3. updated_at (DB row update)
-        const disconnectTs = existing.value.lastDisconnectTimestamp 
-          ? new Date(existing.value.lastDisconnectTimestamp)
+        const disconnectTs = existingValue.lastDisconnectTimestamp 
+          ? new Date(existingValue.lastDisconnectTimestamp)
           : null;
-        const activeTs = existing.value.lastActiveTimestamp
-          ? new Date(existing.value.lastActiveTimestamp)
+        const activeTs = existingValue.lastActiveTimestamp
+          ? new Date(existingValue.lastActiveTimestamp)
           : null;
-        const dbTs = existing.updated_at ? new Date(existing.updated_at) : null;
+        const dbTs = existing?.updated_at ? new Date(existing.updated_at) : null;
         
         // Pick the LATEST of disconnect and active timestamps
         const lastKnown = disconnectTs && activeTs
@@ -104,7 +108,7 @@ class SystemStateService {
           lastShutdownTimestamp: activeTs || null,
           lastDisconnectTimestamp: disconnectTs || null,
           isOnline: true,
-          startupCount: (existing.value.startupCount || 0) + 1,
+          startupCount: (existingValue.startupCount || 0) + 1,
           lastStartupTimestamp: now,
           missedMessagesProcessed: 0,
           userId: this.userId,
@@ -236,14 +240,12 @@ class SystemStateService {
       };
 
       await db
-        .from('whatsapp_sessions')
+        .from('system_state')
         .upsert({
-          session_id: stateKey,
-          key: 'heartbeat',
-          value: stateValue,
-          user_id: this.userId,
+          key: stateKey,
+          value: JSON.stringify(stateValue),  // TEXT column
           updated_at: new Date().toISOString(),
-        }, { onConflict: 'session_id,key' });
+        }, { onConflict: 'key' });
     } catch (error: any) {
       // Don't crash on save errors
       console.error('System state save failed:', error.message);
@@ -273,17 +275,20 @@ class SystemStateService {
       const stateKey = `system_state_${this.userId || 'default'}`;
       
       const { data } = await db
-        .from('whatsapp_sessions')
+        .from('system_state')
         .select('value')
-        .eq('session_id', stateKey)
-        .eq('key', 'heartbeat')
+        .eq('key', stateKey)
         .single();
 
-      if (data?.value?.lastDisconnectTimestamp) {
-        return new Date(data.value.lastDisconnectTimestamp);
+      const parsed = data?.value
+        ? (typeof data.value === 'string' ? JSON.parse(data.value) : data.value)
+        : null;
+
+      if (parsed?.lastDisconnectTimestamp) {
+        return new Date(parsed.lastDisconnectTimestamp);
       }
-      if (data?.value?.lastActiveTimestamp) {
-        return new Date(data.value.lastActiveTimestamp);
+      if (parsed?.lastActiveTimestamp) {
+        return new Date(parsed.lastActiveTimestamp);
       }
       return null;
     } catch (error) {

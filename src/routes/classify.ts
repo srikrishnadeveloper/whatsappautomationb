@@ -4,6 +4,7 @@
  */
 
 import { Router } from 'express';
+import { classifyWithML, isMLClassifierReady, getMLClassifierStatus } from '../classifier/ml';
 
 const router = Router();
 
@@ -130,13 +131,31 @@ function classifyMessage(content: string): ClassificationResult {
 // POST /api/classify - Classify a message
 router.post('/', async (req, res) => {
   try {
-    const { content, sender, chat_name } = req.body;
+    const { content, sender, chat_name, method } = req.body;
 
     if (!content) {
       return res.status(400).json({
         success: false,
         error: 'content is required'
       });
+    }
+
+    // If method=ml requested, try ML first
+    if (method === 'ml' && isMLClassifierReady()) {
+      const mlResult = classifyWithML(content);
+      if (mlResult) {
+        return res.json({
+          success: true,
+          data: {
+            input: { content, sender: sender || null, chat_name: chat_name || null },
+            classification: mlResult,
+            method: 'ml',
+            confidence_scores: mlResult.ml_confidence_scores,
+            priority_scores: mlResult.ml_priority_scores,
+            inference_time_ms: mlResult.inference_time_ms,
+          }
+        });
+      }
     }
 
     const result = classifyMessage(content);
@@ -159,6 +178,19 @@ router.post('/', async (req, res) => {
       error: error.message
     });
   }
+});
+
+// GET /api/classify/ml-status - Get ML classifier status
+router.get('/ml-status', (req, res) => {
+  const status = getMLClassifierStatus();
+  res.json({
+    success: true,
+    data: {
+      ready: status.ready,
+      error: status.error,
+      model: status.meta,
+    }
+  });
 });
 
 // POST /api/classify/batch - Classify multiple messages

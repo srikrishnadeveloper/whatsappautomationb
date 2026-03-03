@@ -28,7 +28,8 @@ router.get('/', async (req, res) => {
       search: search as string,
       limit: Number(limit),
       offset: Number(offset),
-      userId: req.userId
+      userId: req.userId,
+      jwt: req.supabaseToken
     });
 
     res.json({
@@ -51,7 +52,7 @@ router.get('/', async (req, res) => {
 // GET /api/messages/stats - Get message statistics
 router.get('/stats', async (req, res) => {
   try {
-    const stats = await hybridMessageStore.getStats(req.userId);
+    const stats = await hybridMessageStore.getStats(req.userId, req.supabaseToken);
     res.json({ success: true, data: stats, storage: hybridMessageStore.getStorageType() });
   } catch (error: any) {
     console.error('Error fetching stats:', error);
@@ -62,7 +63,7 @@ router.get('/stats', async (req, res) => {
 // GET /api/messages/:id - Get single message
 router.get('/:id', async (req, res) => {
   try {
-    const msg = await hybridMessageStore.get(req.params.id, req.userId);
+    const msg = await hybridMessageStore.get(req.params.id, req.userId, req.supabaseToken);
     if (!msg) {
       return res.status(404).json({ success: false, error: 'Message not found' });
     }
@@ -89,7 +90,7 @@ router.post('/', async (req, res) => {
       sender, chat_name, timestamp: new Date().toISOString(), content,
       message_type, classification, decision, priority, ai_reasoning,
       metadata: metadata || {}
-    }, req.userId);
+    }, req.userId, req.supabaseToken);
 
     res.status(201).json({ success: true, data: newMsg, storage: hybridMessageStore.getStorageType() });
   } catch (error: any) {
@@ -112,7 +113,7 @@ router.patch('/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: 'No valid fields to update' });
     }
 
-    const updated = await hybridMessageStore.update(req.params.id, filteredUpdates, req.userId);
+    const updated = await hybridMessageStore.update(req.params.id, filteredUpdates, req.userId, req.supabaseToken);
     if (!updated) {
       return res.status(404).json({ success: false, error: 'Message not found' });
     }
@@ -126,7 +127,7 @@ router.patch('/:id', async (req, res) => {
 // DELETE /api/messages/:id - Delete message
 router.delete('/:id', async (req, res) => {
   try {
-    const deleted = await hybridMessageStore.delete(req.params.id, req.userId);
+    const deleted = await hybridMessageStore.delete(req.params.id, req.userId, req.supabaseToken);
     if (!deleted) {
       return res.status(404).json({ success: false, error: 'Message not found' });
     }
@@ -155,7 +156,7 @@ router.post('/bulk', async (req, res) => {
           classification: msg.classification, decision: msg.decision,
           priority: msg.priority, ai_reasoning: msg.ai_reasoning,
           metadata: msg.metadata || {}
-        }, req.userId);
+        }, req.userId, req.supabaseToken);
         results.push(newMsg);
       }
     }
@@ -170,7 +171,7 @@ router.post('/bulk', async (req, res) => {
 // DELETE /api/messages/clear - Clear all messages
 router.delete('/clear', async (req, res) => {
   try {
-    const count = await hybridMessageStore.clearAll(req.userId);
+    const count = await hybridMessageStore.clearAll(req.userId, req.supabaseToken);
     res.json({ success: true, message: `Cleared ${count} messages`, count, storage: hybridMessageStore.getStorageType() });
   } catch (error: any) {
     console.error('Error clearing messages:', error);

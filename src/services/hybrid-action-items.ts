@@ -190,7 +190,7 @@ class HybridActionItemsStore {
     }
   }
 
-  async add(item: Omit<ActionItem, 'id' | 'createdAt' | 'updatedAt'>, userId?: string): Promise<ActionItem> {
+  async add(item: Omit<ActionItem, 'id' | 'createdAt' | 'updatedAt'>, userId?: string, jwt?: string): Promise<ActionItem> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore) {
@@ -198,12 +198,11 @@ class HybridActionItemsStore {
         const result = await this.supabaseStore.create({
           ...item,
           title: item.title || 'Untitled',
-        }, userId);
+        }, userId, jwt);
         console.log(`💾 Action item SAVED to Supabase (ID: ${result.id})`);
         return result;
       } catch (error: any) {
-        console.error('❌ Supabase action item save failed:', error.message);
-        this.useSupabase = false;
+        console.error('❌ Supabase action item save failed (will retry next time):', error.message);
       }
     }
     
@@ -224,13 +223,14 @@ class HybridActionItemsStore {
       suggestedTask?: string;
       deadline?: string;
     },
-    userId?: string
+    userId?: string,
+    jwt?: string
   ): Promise<ActionItem | null> {
     await this.initialize();
 
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.createFromMessage(messageId, content, sender, chatName, classification, userId);
+        return await this.supabaseStore.createFromMessage(messageId, content, sender, chatName, classification, userId, jwt);
       } catch (error: any) {
         console.error('❌ Supabase createFromMessage failed:', error.message);
       }
@@ -256,12 +256,12 @@ class HybridActionItemsStore {
     });
   }
 
-  async get(id: string, userId?: string): Promise<ActionItem | undefined> {
+  async get(id: string, userId?: string, jwt?: string): Promise<ActionItem | undefined> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.get(id, userId);
+        return await this.supabaseStore.get(id, userId, jwt);
       } catch (error: any) {
         console.error('Supabase get failed:', error.message);
       }
@@ -280,6 +280,7 @@ class HybridActionItemsStore {
     limit?: number;
     offset?: number;
     userId?: string;
+    jwt?: string;
   }): Promise<{ data: ActionItem[]; total: number }> {
     await this.initialize();
     
@@ -287,20 +288,19 @@ class HybridActionItemsStore {
       try {
         return await this.supabaseStore.getAll(filters);
       } catch (error: any) {
-        console.error('Supabase getAll failed:', error.message);
-        this.useSupabase = false;
+        console.error('Supabase getAll failed (falling back to in-memory):', error.message);
       }
     }
     
     return this.inMemoryStore.getAll(filters);
   }
 
-  async update(id: string, updates: Partial<ActionItem>, userId?: string): Promise<ActionItem | null> {
+  async update(id: string, updates: Partial<ActionItem>, userId?: string, jwt?: string): Promise<ActionItem | null> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.update(id, updates, userId);
+        return await this.supabaseStore.update(id, updates, userId, jwt);
       } catch (error: any) {
         console.error('Supabase update failed:', error.message);
       }
@@ -309,12 +309,12 @@ class HybridActionItemsStore {
     return this.inMemoryStore.update(id, updates);
   }
 
-  async delete(id: string, userId?: string): Promise<boolean> {
+  async delete(id: string, userId?: string, jwt?: string): Promise<boolean> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.delete(id, userId);
+        return await this.supabaseStore.delete(id, userId, jwt);
       } catch (error: any) {
         console.error('Supabase delete failed:', error.message);
       }
@@ -323,12 +323,12 @@ class HybridActionItemsStore {
     return this.inMemoryStore.delete(id);
   }
 
-  async complete(id: string, userId?: string): Promise<ActionItem | null> {
+  async complete(id: string, userId?: string, jwt?: string): Promise<ActionItem | null> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.complete(id, userId);
+        return await this.supabaseStore.complete(id, userId, jwt);
       } catch (error: any) {
         console.error('Supabase complete failed:', error.message);
       }
@@ -337,12 +337,12 @@ class HybridActionItemsStore {
     return this.inMemoryStore.complete(id);
   }
 
-  async getStats(userId?: string): Promise<ActionItemStats> {
+  async getStats(userId?: string, jwt?: string): Promise<ActionItemStats> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.getStats(userId);
+        return await this.supabaseStore.getStats(userId, jwt);
       } catch (error: any) {
         console.error('Supabase getStats failed:', error.message);
       }
@@ -351,13 +351,13 @@ class HybridActionItemsStore {
     return this.inMemoryStore.getStats();
   }
 
-  async clearAll(userId?: string): Promise<number> {
+  async clearAll(userId?: string, jwt?: string): Promise<number> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore && userId) {
       try {
-        const statsBefore = await this.supabaseStore.getStats(userId);
-        await this.supabaseStore.clear(userId);
+        const statsBefore = await this.supabaseStore.getStats(userId, jwt);
+        await this.supabaseStore.clear(userId, jwt);
         console.log(`🗑️ Cleared ${statsBefore.total} action items from Supabase`);
         return statsBefore.total;
       } catch (error: any) {

@@ -29,11 +29,16 @@ import actionItemsRouter from './routes/action-items-hybrid';
 import authRouter from './routes/auth-supabase';
 import searchRouter from './routes/search';
 import dailySummaryRouter from './routes/daily-summary';
+import gmailRouter from './routes/gmail';
+import privacyRouter from './routes/privacy';
 import { systemState } from './services/system-state';
+import { startGmailAutoSync, stopGmailAutoSync } from './services/gmail-auto-sync';
 
 // Import WhatsApp service
-import { startWhatsApp, stopWhatsApp, logoutWhatsApp, setSessionOwner, getSessionOwner } from './services/whatsapp-integrated';
+import { startWhatsApp, stopWhatsApp, logoutWhatsApp, setSessionOwner, getSessionOwner, refreshSessionJwt } from './services/whatsapp-integrated';
 import log from './services/activity-log';
+import clog from './services/console-logger';
+import { initMLClassifier } from './classifier/ml';
 
 // Wire up WhatsApp functions to routes
 setWhatsAppFunctions(startWhatsApp, stopWhatsApp, logoutWhatsApp, setSessionOwner, getSessionOwner);
@@ -92,19 +97,31 @@ app.use(express.urlencoded({ extended: true }));
 // Compression
 app.use(compression());
 
+// Auto-refresh the WhatsApp session JWT on every authenticated request.
+// This keeps the stored JWT fresh so long-running WhatsApp sessions can
+// continue writing to Supabase even after the original JWT would have expired.
+const refreshJwtMiddleware = (req: any, _res: any, next: any) => {
+  if (req.userId && req.supabaseToken) {
+    refreshSessionJwt(req.userId, req.supabaseToken);
+  }
+  next();
+};
+
 // ── Public routes (no auth required) ──
 app.use('/api/auth', authRouter);
 app.use('/api/health', healthRouter);
+app.use('/api/whatsapp', optionalAuth, refreshJwtMiddleware, whatsappRouter); // optionalAuth so req.userId is set when token present
 
 // ── Protected routes (requireAuth) ──
-app.use('/api/messages', requireAuth, messagesRouter);
-app.use('/api/classify', requireAuth, classifyRouter);
-app.use('/api/stats', requireAuth, statsRouter);
-app.use('/api/whatsapp', requireAuth, whatsappRouter);
-app.use('/api/logs', requireAuth, logsRouter);
-app.use('/api/actions', requireAuth, actionItemsRouter);
-app.use('/api/search', requireAuth, searchRouter);
-app.use('/api/daily-summary', requireAuth, dailySummaryRouter);
+app.use('/api/messages', requireAuth, refreshJwtMiddleware, messagesRouter);
+app.use('/api/classify', requireAuth, refreshJwtMiddleware, classifyRouter);
+app.use('/api/stats', requireAuth, refreshJwtMiddleware, statsRouter);
+app.use('/api/logs', requireAuth, refreshJwtMiddleware, logsRouter);
+app.use('/api/actions', requireAuth, refreshJwtMiddleware, actionItemsRouter);
+app.use('/api/search', requireAuth, refreshJwtMiddleware, searchRouter);
+app.use('/api/daily-summary', requireAuth, refreshJwtMiddleware, dailySummaryRouter);
+app.use('/api/gmail',   requireAuth, refreshJwtMiddleware, gmailRouter);
+app.use('/api/privacy', requireAuth, refreshJwtMiddleware, privacyRouter);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -122,7 +139,8 @@ app.get('/', (req, res) => {
       whatsapp: '/api/whatsapp',
       actions: '/api/actions',
       search: '/api/search',
-      dailySummary: '/api/daily-summary'
+      dailySummary: '/api/daily-summary',
+      gmail: '/api/gmail'
     }
   });
 });
@@ -146,6 +164,7 @@ app.use((req, res) => {
 
 // Start server
 app.listen(PORT, async () => {
+  clog.logStartupBanner(PORT);
   log.success('Server Started', `API running at http://localhost:${PORT}`);
   log.info('Frontend URL', process.env.FRONTEND_URL || 'http://localhost:5173');
   
@@ -167,11 +186,29 @@ app.listen(PORT, async () => {
   console.log('  GET  /api/whatsapp/*   - WhatsApp control (auth)');
   console.log('  POST /api/search       - AI search (auth)');
   console.log('  GET  /api/daily-summary - Daily summary (auth)');
+  console.log('  GET  /api/gmail/*      - Gmail integration (auth)');
   console.log('');
+
+  // Initialize ML classifier (loads trained Naive Bayes model)
+  try {
+    const mlOk = await initMLClassifier();
+    if (mlOk) {
+      log.success('ML Classifier Ready', 'Naive Bayes model loaded — free, fast, ~97% accuracy');
+    } else {
+      log.warning('ML Classifier Not Available', "Run 'npx ts-node src/classifier/ml/train.ts' to train");
+    }
+  } catch (err: any) {
+    log.warning('ML Classifier Init Failed', err.message);
+  }
 
   // Auto-start WhatsApp if enabled
   if (AUTO_START_WHATSAPP) {
-    log.info('Auto-starting WhatsApp', 'Set AUTO_START_WHATSAPP=false in .env to disable');
+    const owner = getSessionOwner();
+    if (owner) {
+      log.info('Auto-starting WhatsApp', `Session owner: ${owner.substring(0, 8)}... — Set AUTO_START_WHATSAPP=false in .env to disable`);
+    } else {
+      log.warning('Auto-starting WhatsApp', 'No session owner on disk — messages will be in-memory until a user logs in via the frontend');
+    }
     
     setTimeout(() => {
       startWhatsApp().catch(err => {
@@ -181,6 +218,9 @@ app.listen(PORT, async () => {
   } else {
     log.info('WhatsApp Manual Mode', 'POST /api/whatsapp/start to connect');
   }
+
+  // Start Gmail auto-sync scheduler
+  startGmailAutoSync();
 });
 
 // Graceful shutdown handling
@@ -191,6 +231,7 @@ async function gracefulShutdown(signal: string) {
   } catch (e) {
     console.error('WhatsApp stop error during shutdown:', e);
   }
+  stopGmailAutoSync();
   await systemState.shutdown();
   process.exit(0);
 }

@@ -2,20 +2,26 @@
  * Gemini AI Classifier — Production Grade
  * Uses enhanced rule-based pre-filtering + Google Gemini for uncertain cases.
  * Goal: 60-70% of messages handled by rules alone, minimising AI API calls.
+ * Also supports Gemini Vision for WhatsApp image messages.
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import log from './activity-log';
+import clog from './console-logger';
 import { classifyMessage as ruleBasedClassify, makeDecision } from '../classifier/rule-based';
+import { initMLClassifier, classifyWithML, isMLClassifierReady, getMLClassifierStatus } from '../classifier/ml';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
 
 let genAI: GoogleGenerativeAI | null = null;
 let model: any = null;
+let visionModel: any = null; // Dedicated vision model instance
 
 // Stats tracking
 let aiCallCount = 0;
 let ruleOnlyCount = 0;
+let mlCallCount = 0;
+let visionCallCount = 0;
 
 // Initialize Gemini
 export function initGemini() {
@@ -27,7 +33,9 @@ export function initGemini() {
   try {
     genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
     model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    log.success('Gemini AI initialized', 'Using gemini-2.0-flash');
+    // gemini-2.0-flash handles both text and image (multimodal)
+    visionModel = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    log.success('Gemini AI initialized', 'Using gemini-2.0-flash (text + vision)');
     return true;
   } catch (error: any) {
     log.error('Failed to initialize Gemini', error.message);
@@ -55,6 +63,116 @@ export interface ClassificationResult {
   suggestedTask?: string;
   deadline?: string;
   actionItems?: ExtractedActionItem[];
+}
+
+// Image analysis result from Gemini Vision
+export interface ImageAnalysisResult {
+  description: string;           // What is in the image
+  extractedText: string;         // Any text/writing visible in the image
+  combinedContent: string;       // Combined description + caption for classification
+  hasActionableContent: boolean; // True if image contains tasks/deadlines/meetings
+  suggestedCategory: string;     // Suggested message category
+  mimeType: string;
+}
+
+// ============================================
+// GEMINI VISION — Image Analysis
+// ============================================
+
+/**
+ * Download and analyze an image via Gemini Vision.
+ * Returns a full ImageAnalysisResult with description, OCR text, and combined content
+ * ready to be fed straight into classifyWithAI.
+ */
+export async function analyzeImageWithGemini(
+  imageBuffer: Buffer,
+  mimeType: string = 'image/jpeg',
+  caption: string = ''
+): Promise<ImageAnalysisResult> {
+  const fallback: ImageAnalysisResult = {
+    description: caption || '[Image]',
+    extractedText: '',
+    combinedContent: caption || '[Image - no analysis available]',
+    hasActionableContent: false,
+    suggestedCategory: 'casual',
+    mimeType,
+  };
+
+  if (!visionModel) {
+    clog.logFallback('Vision model not initialized — returning caption only');
+    return fallback;
+  }
+
+  try {
+    const base64 = imageBuffer.toString('base64');
+
+    const imagePart = {
+      inlineData: {
+        data: base64,
+        mimeType,
+      },
+    } as any;
+
+    const prompt = `Analyze this WhatsApp image precisely and return ONLY JSON (no markdown):
+{
+  "description": "concise 1-2 sentence description of what you see",
+  "extractedText": "ALL visible text, numbers, dates, names exactly as written — empty string if none",
+  "hasActionableContent": true/false,
+  "suggestedCategory": "work|study|personal|urgent|casual|spam"
+}
+
+Rules:
+- extractedText must capture every word, number, deadline, meeting time visible
+- hasActionableContent = true if image shows tasks, deadlines, meeting invites, invoices, documents, schedules
+- Be precise about dates, times, names visible in the image
+${caption ? `\nCaption from sender: "${caption}"` : ''}`;
+
+    const result = await visionModel.generateContent([prompt, imagePart]);
+    const response = await result.response;
+    const text = response.text();
+
+    visionCallCount++;
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      log.warning('Gemini Vision response unparseable', text.slice(0, 200));
+      return {
+        ...fallback,
+        description: text.slice(0, 300),
+        combinedContent: caption ? `${caption}\n[Image: ${text.slice(0, 200)}]` : `[Image: ${text.slice(0, 200)}]`,
+      };
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    const description: string  = parsed.description   || '';
+    const extractedText: string = parsed.extractedText || '';
+    const hasActionable: boolean = !!parsed.hasActionableContent;
+    const suggestedCat: string  = parsed.suggestedCategory || 'casual';
+
+    // Build the combined content that will be fed into the text classifier
+    const parts: string[] = [];
+    if (caption)       parts.push(`Caption: ${caption}`);
+    if (description)   parts.push(`Image: ${description}`);
+    if (extractedText) parts.push(`Text in image: ${extractedText}`);
+    const combinedContent = parts.join('\n') || '[Image - no content extracted]';
+
+    log.success('Gemini Vision analyzed image', 
+      `${description.slice(0, 80)} | textLen=${extractedText.length} | actionable=${hasActionable} [vision #${visionCallCount}]`);
+    clog.logGeminiResult(suggestedCat, hasActionable ? 'high' : 'low', hasActionable ? 'create' : 'review', 0, visionCallCount);
+
+    return {
+      description,
+      extractedText,
+      combinedContent,
+      hasActionableContent: hasActionable,
+      suggestedCategory: suggestedCat,
+      mimeType,
+    };
+  } catch (error: any) {
+    clog.logPipelineError('Gemini Vision', error.message);
+    log.warning('Gemini Vision failed', error.message);
+    return fallback;
+  }
 }
 
 // ============================================
@@ -121,6 +239,7 @@ export async function classifyWithAI(content: string, sender: string): Promise<C
     const mappedCategory = categoryMap[ruleResult.category] || 'casual';
     const mappedPriority = priorityMap[ruleResult.priority] || 'low';
 
+    clog.logRuleBasedResult(mappedCategory, mappedPriority, decision, ruleResult.confidence, ruleResult.keywords_matched);
     log.info('Rule-based classification', 
       `${mappedCategory} | ${mappedPriority} | ${decision} | confidence=${ruleResult.confidence.toFixed(2)} [${ruleResult.keywords_matched.join(', ')}]`);
 
@@ -138,6 +257,7 @@ export async function classifyWithAI(content: string, sender: string): Promise<C
   // Short messages (< 20 chars) — rules are enough, don't waste AI tokens
   if (content.length < 20) {
     ruleOnlyCount++;
+    clog.logRuleBasedResult(categoryMap[ruleResult.category] || 'casual', priorityMap[ruleResult.priority] || 'low', decision, ruleResult.confidence, ['short msg']);
     return {
       category: categoryMap[ruleResult.category] || 'casual',
       priority: decision === 'ignore' ? 'none' : (priorityMap[ruleResult.priority] || 'low'),
@@ -150,6 +270,7 @@ export async function classifyWithAI(content: string, sender: string): Promise<C
   // Media-only messages — skip AI
   if (content === '[Media/No Content]' || content === '[Media]') {
     ruleOnlyCount++;
+    clog.logIgnored('Media-only message — no text to classify');
     return {
       category: 'casual',
       priority: 'none',
@@ -159,9 +280,51 @@ export async function classifyWithAI(content: string, sender: string): Promise<C
     };
   }
 
-  // ---- STEP 2: Call AI for uncertain cases ----
+  // ---- STEP 2: Try ML classifier (free, fast, ~97% accuracy) ----
+  if (isMLClassifierReady()) {
+    const mlResult = classifyWithML(content);
+    if (mlResult && mlResult.confidence >= 0.65) {
+      mlCallCount++;
+      const mlCategory = categoryMap[mlResult.category] || 'casual';
+      const mlPriority = priorityMap[mlResult.priority] || 'low';
+      const mlDecision = mlResult.has_action_verb || mlResult.has_deadline
+        ? 'create' as const
+        : mlResult.confidence >= 0.8
+          ? (mlResult.category === 'ignore' ? 'ignore' as const : 'create' as const)
+          : 'review' as const;
+
+      clog.logMLResult(mlCategory, mlPriority, mlDecision, mlResult.confidence, mlResult.inference_time_ms, mlCallCount);
+      log.info('ML Classification',
+        `${mlCategory} | ${mlPriority} | ${mlDecision} | conf=${mlResult.confidence.toFixed(2)} | ${mlResult.inference_time_ms}ms [ML call #${mlCallCount}]`);
+
+      return {
+        category: mlCategory,
+        priority: mlDecision === 'ignore' ? 'none' : mlPriority,
+        decision: mlDecision,
+        reasoning: `ML model (${mlResult.confidence.toFixed(2)}): ${mlResult.keywords_matched.slice(0, 5).join(', ') || 'pattern match'}`,
+        suggestedTask: mlDecision === 'create' ? content.slice(0, 80) : undefined,
+        deadline: mlResult.has_deadline ? 'detected' : undefined,
+        actionItems: [],
+      };
+    }
+  }
+
+  // ---- STEP 3: Call Gemini AI for uncertain cases ----
   if (!model) {
-    // No AI available — use rule result as-is
+    // No AI available — use ML or rule result as-is
+    const mlFallback = isMLClassifierReady() ? classifyWithML(content) : null;
+    if (mlFallback) {
+      mlCallCount++;
+      clog.logFallback(`No Gemini — using ML fallback (conf=${mlFallback.confidence.toFixed(2)})`);
+      return {
+        category: categoryMap[mlFallback.category] || 'personal',
+        priority: priorityMap[mlFallback.priority] || 'low',
+        decision,
+        reasoning: `ML fallback (no Gemini, conf=${mlFallback.confidence.toFixed(2)}): ${mlFallback.keywords_matched.join(', ')}`,
+        actionItems: [],
+      };
+    }
+    clog.logFallback('No Gemini, no ML — using rule-based fallback');
     ruleOnlyCount++;
     return {
       category: categoryMap[ruleResult.category] || 'personal',
@@ -174,6 +337,7 @@ export async function classifyWithAI(content: string, sender: string): Promise<C
 
   try {
     aiCallCount++;
+    clog.logEscalatingToGemini(`rule conf=${ruleResult.confidence.toFixed(2)}, ML low/unavailable`);
     const prompt = buildPrompt(content, sender);
 
     const result = await model.generateContent(prompt);
@@ -186,6 +350,7 @@ export async function classifyWithAI(content: string, sender: string): Promise<C
       const parsed = JSON.parse(jsonMatch[0]);
       
       const actionItemCount = parsed.actionItems?.length || 0;
+      clog.logGeminiResult(parsed.category || 'casual', parsed.priority || 'low', parsed.decision || 'review', actionItemCount, aiCallCount);
       log.info('AI Classification', 
         `${parsed.category} | ${parsed.priority} | ${parsed.decision} | ${actionItemCount} actions [AI call #${aiCallCount}]`);
       
@@ -200,11 +365,26 @@ export async function classifyWithAI(content: string, sender: string): Promise<C
       };
     }
   } catch (error: any) {
+    clog.logPipelineError('Gemini', error.message);
     log.warning('AI classification failed', error.message);
   }
 
-  // ---- STEP 3: Fallback to rules if AI fails ----
+  // ---- STEP 4: Fallback to ML then rules if AI fails ----
+  const mlLastResort = isMLClassifierReady() ? classifyWithML(content) : null;
+  if (mlLastResort) {
+    mlCallCount++;
+    clog.logFallback(`Gemini failed — ML rescue (conf=${mlLastResort.confidence.toFixed(2)})`);
+    return {
+      category: categoryMap[mlLastResort.category] || 'personal',
+      priority: priorityMap[mlLastResort.priority] || 'low',
+      decision,
+      reasoning: `ML fallback (AI failed, conf=${mlLastResort.confidence.toFixed(2)}): ${mlLastResort.keywords_matched.join(', ')}`,
+      actionItems: [],
+    };
+  }
+
   ruleOnlyCount++;
+  clog.logFallback('All classifiers failed — using rule-based fallback');
   return {
     category: categoryMap[ruleResult.category] || 'personal',
     priority: priorityMap[ruleResult.priority] || 'low',
@@ -238,7 +418,17 @@ export function classifyWithRules(content: string): ClassificationResult {
 
 // Get classifier stats
 export function getClassifierStats() {
-  return { aiCalls: aiCallCount, ruleOnly: ruleOnlyCount, total: aiCallCount + ruleOnlyCount };
+  return {
+    aiCalls: aiCallCount,
+    mlCalls: mlCallCount,
+    ruleOnly: ruleOnlyCount,
+    visionCalls: visionCallCount,
+    total: aiCallCount + mlCallCount + ruleOnlyCount,
+    mlStatus: getMLClassifierStatus(),
+  };
 }
+
+// Initialize ML classifier (call at startup)
+export { initMLClassifier } from '../classifier/ml';
 
 export default { initGemini, classifyWithAI, classifyWithRules, getClassifierStats };

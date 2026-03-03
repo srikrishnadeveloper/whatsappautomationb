@@ -5,10 +5,12 @@
 import { Router } from 'express';
 import { supabase } from '../config/supabase';
 import { systemState } from '../services/system-state';
+import { isMLClassifierReady, getMLClassifierStatus } from '../classifier/ml';
 
 const router = Router();
 
 router.get('/', async (req, res) => {
+  const mlStatus = getMLClassifierStatus();
   const health = {
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -17,8 +19,14 @@ router.get('/', async (req, res) => {
     services: {
       api: 'ok',
       supabase: 'not configured',
-      gemini: process.env.GOOGLE_AI_API_KEY ? 'configured' : 'not configured'
-    }
+      gemini: process.env.GOOGLE_AI_API_KEY ? 'configured' : 'not configured',
+      ml_classifier: isMLClassifierReady() ? 'ready' : (mlStatus.error || 'not loaded'),
+    },
+    ml: isMLClassifierReady() ? {
+      accuracy: mlStatus.meta?.categoryAccuracy,
+      method: mlStatus.meta?.method,
+      categories: mlStatus.meta?.categories,
+    } : null,
   };
 
   // Test Supabase connection if client exists

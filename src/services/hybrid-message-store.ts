@@ -5,6 +5,13 @@
 
 import { StoredMessage } from './message-store';
 import { hasSupabaseCredentials } from '../config/supabase';
+import { encryptContent, decryptContent, isEncryptionEnabled } from './encryption';
+
+/** Decrypt the content field on a message (no-op if not encrypted). */
+function decryptMessage<T extends { content?: string }>(msg: T): T {
+  if (!msg.content) return msg;
+  return { ...msg, content: decryptContent(msg.content) };
+}
 
 // In-memory fallback store
 class InMemoryMessageStore {
@@ -110,6 +117,17 @@ class InMemoryMessageStore {
   clear(): void {
     this.messages.clear();
   }
+
+  /** Return all raw messages for flushing to Supabase, then clear the map */
+  drainAll(): StoredMessage[] {
+    const all = Array.from(this.messages.values());
+    this.messages.clear();
+    return all;
+  }
+
+  get size(): number {
+    return this.messages.size;
+  }
 }
 
 // Create the hybrid store — tries Supabase first, falls back to in-memory
@@ -139,31 +157,36 @@ class HybridMessageStore {
     }
   }
 
-  async add(message: Omit<StoredMessage, 'id' | 'created_at'>, userId?: string): Promise<StoredMessage> {
+  async add(message: Omit<StoredMessage, 'id' | 'created_at'>, userId?: string, jwt?: string): Promise<StoredMessage> {
     await this.initialize();
-    
+
     if (this.useSupabase && this.supabaseStore && userId) {
       try {
-        const result = await this.supabaseStore.add(message, userId);
-        console.log(`💾 Message SAVED to Supabase (ID: ${result.id}, User: ${userId})`);
-        return result;
+        // Encrypt content at rest (only when ENCRYPTION_SECRET is configured)
+        const msgToStore = isEncryptionEnabled()
+          ? { ...message, content: encryptContent(message.content) }
+          : message;
+        const result = await this.supabaseStore.add(msgToStore, userId, jwt);
+        console.log(`💾 Message SAVED to Supabase (ID: ${result.id}, User: ${userId}${isEncryptionEnabled() ? ', encrypted' : ''})`);
+        // Return with decrypted content so callers see plaintext
+        return decryptMessage(result);
       } catch (error: any) {
-        console.error('❌ Supabase save failed:', error.message);
-        this.useSupabase = false;
+        console.error('❌ Supabase save failed (will retry next message):', error.message);
+        // Don't permanently disable Supabase – transient errors (JWT expiry, network) should not kill persistence.
       }
     }
-    
+
     const result = this.inMemoryStore.add(message);
     console.log(`📦 Message saved to IN-MEMORY (ID: ${result.id}) - Will be lost on restart!`);
     return result;
   }
 
-  async existsByMessageKey(messageKey: string, userId?: string): Promise<boolean> {
+  async existsByMessageKey(messageKey: string, userId?: string, jwt?: string): Promise<boolean> {
     await this.initialize();
 
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.existsByMessageKey(messageKey, userId);
+        return await this.supabaseStore.existsByMessageKey(messageKey, userId, jwt);
       } catch {
         return false;
       }
@@ -171,17 +194,18 @@ class HybridMessageStore {
     return false;
   }
 
-  async get(id: string, userId?: string): Promise<StoredMessage | undefined> {
+  async get(id: string, userId?: string, jwt?: string): Promise<StoredMessage | undefined> {
     await this.initialize();
-    
+
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.get(id, userId);
+        const result = await this.supabaseStore.get(id, userId, jwt);
+        return result ? decryptMessage(result) : result;
       } catch (error: any) {
         console.error('Supabase get failed:', error.message);
       }
     }
-    
+
     return this.inMemoryStore.get(id);
   }
 
@@ -193,27 +217,29 @@ class HybridMessageStore {
     limit?: number;
     offset?: number;
     userId?: string;
+    jwt?: string;
   }): Promise<{ data: StoredMessage[]; total: number }> {
     await this.initialize();
-    
+
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.getAll(filters);
+        const raw = await this.supabaseStore.getAll(filters);
+        // Decrypt content on every message returned (no-op if not encrypted)
+        return { ...raw, data: raw.data.map(decryptMessage) };
       } catch (error: any) {
-        console.error('Supabase getAll failed:', error.message);
-        this.useSupabase = false;
+        console.error('Supabase getAll failed (falling back to in-memory):', error.message);
       }
     }
-    
+
     return this.inMemoryStore.getAll(filters);
   }
 
-  async update(id: string, updates: Partial<StoredMessage>, userId?: string): Promise<StoredMessage | null> {
+  async update(id: string, updates: Partial<StoredMessage>, userId?: string, jwt?: string): Promise<StoredMessage | null> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.update(id, updates, userId);
+        return await this.supabaseStore.update(id, updates, userId, jwt);
       } catch (error: any) {
         console.error('Supabase update failed:', error.message);
       }
@@ -222,12 +248,12 @@ class HybridMessageStore {
     return this.inMemoryStore.update(id, updates);
   }
 
-  async delete(id: string, userId?: string): Promise<boolean> {
+  async delete(id: string, userId?: string, jwt?: string): Promise<boolean> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.delete(id, userId);
+        return await this.supabaseStore.delete(id, userId, jwt);
       } catch (error: any) {
         console.error('Supabase delete failed:', error.message);
       }
@@ -236,12 +262,12 @@ class HybridMessageStore {
     return this.inMemoryStore.delete(id);
   }
 
-  async getStats(userId?: string): Promise<any> {
+  async getStats(userId?: string, jwt?: string): Promise<any> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore) {
       try {
-        return await this.supabaseStore.getStats(userId);
+        return await this.supabaseStore.getStats(userId, jwt);
       } catch (error: any) {
         console.error('Supabase getStats failed:', error.message);
       }
@@ -250,12 +276,12 @@ class HybridMessageStore {
     return this.inMemoryStore.getStats();
   }
 
-  async clear(userId?: string): Promise<void> {
+  async clear(userId?: string, jwt?: string): Promise<void> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore && userId) {
       try {
-        await this.supabaseStore.clear(userId);
+        await this.supabaseStore.clear(userId, jwt);
         return;
       } catch (error: any) {
         console.error('Supabase clear failed:', error.message);
@@ -265,13 +291,13 @@ class HybridMessageStore {
     this.inMemoryStore.clear();
   }
 
-  async clearAll(userId?: string): Promise<number> {
+  async clearAll(userId?: string, jwt?: string): Promise<number> {
     await this.initialize();
     
     if (this.useSupabase && this.supabaseStore && userId) {
       try {
-        const countBefore = await this.supabaseStore.count(userId);
-        await this.supabaseStore.clear(userId);
+        const countBefore = await this.supabaseStore.count(userId, jwt);
+        await this.supabaseStore.clear(userId, jwt);
         console.log(`🗑️ Cleared ${countBefore} messages from Supabase`);
         return countBefore;
       } catch (error: any) {
@@ -289,6 +315,39 @@ class HybridMessageStore {
 
   getStorageType(): string {
     return this.useSupabase ? 'supabase' : 'in-memory';
+  }
+
+  /**
+   * Flush any in-memory messages to Supabase.
+   * Called when a JWT becomes available after server auto-start.
+   */
+  async flushInMemoryToSupabase(userId: string, jwt: string): Promise<number> {
+    await this.initialize();
+    if (!this.useSupabase || !this.supabaseStore) return 0;
+
+    const pending = this.inMemoryStore.drainAll();
+    if (pending.length === 0) return 0;
+
+    console.log(`🔄 Flushing ${pending.length} in-memory messages to Supabase...`);
+    let flushed = 0;
+    for (const msg of pending) {
+      try {
+        const { id, created_at, ...data } = msg;
+        const msgToStore = isEncryptionEnabled()
+          ? { ...data, content: encryptContent(data.content) }
+          : data;
+        await this.supabaseStore.add(msgToStore, userId, jwt);
+        flushed++;
+      } catch (err: any) {
+        // Put unflushed messages back
+        this.inMemoryStore.add(msg);
+        console.error(`⚠️ Flush failed for message ${msg.id}: ${err.message}`);
+      }
+    }
+    if (flushed > 0) {
+      console.log(`✅ Flushed ${flushed}/${pending.length} messages to Supabase`);
+    }
+    return flushed;
   }
 }
 
