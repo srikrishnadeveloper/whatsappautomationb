@@ -27,15 +27,16 @@ let genAI: GoogleGenerativeAI | null = null;
 // ── Supported models ────────────────────────────────────────────────────────
 
 export const AVAILABLE_MODELS = [
-  { id: 'gemini-2.5-pro',       label: 'Gemini 2.5 Pro',        tier: 'premium' },
-  { id: 'gemini-2.5-flash',     label: 'Gemini 2.5 Flash',      tier: 'fast'    },
-  { id: 'gemini-2.0-flash',     label: 'Gemini 2.0 Flash',      tier: 'fast'    },
-  { id: 'gemini-2.0-flash-lite',label: 'Gemini 2.0 Flash Lite', tier: 'fast'    },
+  { id: 'gemini-3-pro',          label: 'Gemini 3 Pro',           tier: 'premium' },
+  { id: 'gemini-3-flash',        label: 'Gemini 3 Flash',         tier: 'fast'    },
+  { id: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro',         tier: 'premium' },
+  { id: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash',       tier: 'fast'    },
+  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite',  tier: 'lite'    },
 ] as const;
 
 export type ModelId = typeof AVAILABLE_MODELS[number]['id'];
 
-const DEFAULT_MODEL: ModelId = 'gemini-2.5-flash';
+const DEFAULT_MODEL: ModelId = 'gemini-3-flash';
 
 // Per-user model preference: userId → modelId
 const userModelPrefs = new Map<string, ModelId>();
@@ -440,7 +441,7 @@ export async function getUserMemoryAll(userId: string): Promise<UserMemoryFact[]
 /** Asynchronously extract user facts from a conversation turn and persist them. */
 async function extractAndSaveMemory(userId: string, userQuery: string, aiReply: string): Promise<void> {
   if (!genAI) return;
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' as ModelId });
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' as ModelId });
   try {
     const prompt = `Extract 0-5 personal facts the USER explicitly stated about themselves from this message.
 Only extract facts the user said: their name, language they speak, their job/workplace, where they live, preferences, timezone, or similar personal context.
@@ -480,7 +481,7 @@ function buildMemorySection(memory: Record<string, string>): string {
 // answer from AI knowledge, manage tasks, or update their memory profile.
 
 const WEB_SIGNALS   = /\b(news|latest|current events|today's news|stock price|weather|sports score|match result|trending|who is|what is [a-z]|how do|how does|how to|meaning of|definition|translate|convert|calculate|formula|recipe|tutorial|best way|explain|difference between|when was|where is|why is|wikipedia|search for)\b/i;
-const INBOX_SIGNALS = /\b(message|whatsapp|gmail|email|sent|received|wrote|said|asked|replied|chat|group|forward|document|file|pdf|photo|image|video|audio|attachment|shared|somebody|someone sent|alice|bob|contact)\b/i;
+const INBOX_SIGNALS = /\b(message|messages|whatsapp|gmail|email|sent|received|wrote|said|asked|replied|chat|group|forward|document|file|pdf|photo|image|video|audio|attachment|shared|somebody|someone sent|contact|inbox|unread|recent messages|latest messages|new messages|conversation|thread)\b|anything from|anything about|any message|tell me about messages|show me messages|what did .+ (say|send|write)|who sent/i;
 const MEMORY_SIGNALS = /\b(remember (that|me|my|i am|i'm)|my name is|i am from|i live in|i work at|i speak|call me|update my|forget (that|my|me)|what do you know about me|about me|my preference|my profile)\b/i;
 
 export function detectQueryIntent(query: string, inboxCandidateCount = 0): QueryIntent {
@@ -513,15 +514,21 @@ export async function searchWeb(
     h.role === 'user' ? `User: ${h.content.slice(0, 300)}` : `Assistant: ${h.content.slice(0, 300)}`
   ).join('\n');
 
-  const prompt = `You are Mindline AI — a helpful, precise assistant.
-Today's date: ${new Date().toISOString().slice(0, 10)}
+  const prompt = `You are Mindline AI — a smart, helpful assistant.
+Today: ${new Date().toISOString().slice(0, 10)}
 ${memSection}
-${histLines ? `\nRecent conversation:\n${histLines}\n` : ''}
+${histLines ? `Recent conversation:\n${histLines}\n` : ''}
 User's question: ${userQuery}
 
-Answer in a clear, helpful way. Use markdown formatting (bold, bullets). Be concise but thorough.
-After your answer, suggest 3 follow-up questions as a JSON object:
-{"suggestions": ["q1","q2","q3"]}`;
+Instructions:
+- Give a thorough, well-organized answer using the latest information available
+- Use markdown: **bold** for key terms, bullet points for lists, > for quotes
+- If citing data, mention the source
+- Be precise with numbers, dates, prices — don't approximate
+- After your main answer, add a JSON block with follow-up suggestions
+
+End your response with this JSON on a new line:
+{"suggestions": ["follow-up 1", "follow-up 2", "follow-up 3"]}`;
 
   try {
     // Use Google Search grounding for real-time info
@@ -557,7 +564,7 @@ After your answer, suggest 3 follow-up questions as a JSON object:
     log.error('Web search failed, falling back to model knowledge', err.message);
     // Fallback: answer from model training data without grounding
     try {
-      const fallbackModel = getModelInstance(modelId) || getModelInstance('gemini-2.0-flash' as ModelId);
+      const fallbackModel = getModelInstance(modelId) || getModelInstance('gemini-3-flash' as ModelId);
       if (!fallbackModel) throw new Error('No model');
       const result2 = await fallbackModel.generateContent(prompt);
       const text2 = result2.response.text();
@@ -784,7 +791,10 @@ function searchByKeywords(keywords: string[], messages: MessageData[], limit = 3
       m.metadata?.imageAnalysis?.description ?? '',
       m.metadata?.imageAnalysis?.extractedText ?? '',
       m.metadata?.documentAnalysis?.summary ?? '',
+      m.metadata?.documentAnalysis?.extractedText ?? '',
       m.metadata?.documentAnalysis?.topics?.join(' ') ?? '',
+      m.metadata?.documentAnalysis?.keyEntities?.join(' ') ?? '',
+      m.metadata?.documentAnalysis?.documentType ?? '',
     ].join(' ').toLowerCase();
 
     let hits = 0;
@@ -854,32 +864,54 @@ function buildMessageContext(messages: MessageData[]): string {
     const ts = fmtTs(m.timestamp);
     const rel = fmtRelative(m.timestamp);
     const mediaType = m.metadata?.mediaType;
-    let line = `[${i}] FROM:${m.sender} CHAT:${m.chat_name || '?'} TIME:${ts} (${rel})`;
-    if (mediaType) line += ` TYPE:${mediaType.toUpperCase()}`;
+    let line = `[${i}] FROM: ${m.sender} | CHAT: ${m.chat_name || 'DM'} | TIME: ${ts} (${rel})`;
+    if (mediaType) line += ` | TYPE: ${mediaType.toUpperCase()}`;
 
-    // Show full content (not truncated for short messages)
-    const contentDisplay = m.content.length > 700 ? m.content.slice(0, 700) + '…' : m.content;
+    // Full content — don't truncate short messages, give AI max useful data
+    const contentDisplay = m.content.length > 1200 ? m.content.slice(0, 1200) + '…' : m.content;
     line += `\nCONTENT: ${contentDisplay}`;
 
-    // Document filename — very important for file queries
+    // ── Document/File info — critical for file queries ──
     if (m.metadata?.document?.fileName) {
-      line += `\nFILE: ${m.metadata.document.fileName} (${m.metadata?.document?.mimeType || 'unknown type'})`;
-      if (m.metadata?.document?.fileSize) line += ` size:${Math.round(m.metadata.document.fileSize/1024)}KB`;
+      const doc = m.metadata.document;
+      line += `\nFILE: "${doc.fileName}" (${doc.mimeType || 'unknown'})`;
+      if (doc.fileSize) line += ` [${Math.round(doc.fileSize/1024)}KB]`;
+      if (doc.pageCount) line += ` [${doc.pageCount} pages]`;
     }
-    // Image analysis
+
+    // ── Image analysis — full description + OCR text ──
     if (m.metadata?.imageAnalysis?.description) {
-      line += `\nIMAGE_DESC: ${m.metadata.imageAnalysis.description.slice(0, 300)}`;
+      line += `\nIMAGE_DESCRIPTION: ${m.metadata.imageAnalysis.description}`;
     }
     if (m.metadata?.imageAnalysis?.extractedText) {
-      line += `\nIMAGE_TEXT: ${m.metadata.imageAnalysis.extractedText.slice(0, 300)}`;
+      line += `\nIMAGE_OCR_TEXT: ${m.metadata.imageAnalysis.extractedText}`;
     }
-    // Document analysis
-    if (m.metadata?.documentAnalysis?.summary && !isCorruptedContent(m.metadata.documentAnalysis.summary)) {
-      line += `\nDOC_SUMMARY: ${m.metadata.documentAnalysis.summary.slice(0, 400)}`;
+
+    // ── Document analysis — full summary + topics + entities ──
+    if (m.metadata?.documentAnalysis) {
+      const da = m.metadata.documentAnalysis;
+      if (da.summary && !isCorruptedContent(da.summary)) {
+        line += `\nDOC_SUMMARY: ${da.summary}`;
+      }
+      if (da.extractedText && !isCorruptedContent(da.extractedText)) {
+        line += `\nDOC_KEY_TEXT: ${da.extractedText.slice(0, 800)}`;
+      }
+      if (da.topics?.length) {
+        line += `\nDOC_TOPICS: ${da.topics.join(', ')}`;
+      }
+      if (da.keyEntities?.length) {
+        line += `\nDOC_ENTITIES: ${da.keyEntities.join(', ')}`;
+      }
+      if (da.documentType) {
+        line += `\nDOC_TYPE: ${da.documentType}`;
+      }
     }
-    if (m.metadata?.documentAnalysis?.topics?.length) {
-      line += `\nDOC_TOPICS: ${m.metadata.documentAnalysis.topics.slice(0, 5).join(', ')}`;
+
+    // ── Media key for download reference ──
+    if (m.metadata?.messageKey) {
+      line += `\nMEDIA_KEY: ${m.metadata.messageKey}`;
     }
+
     return line;
   }).join('\n---\n');
 }
@@ -916,37 +948,41 @@ function buildConversationPrompt(
       histLines + '\n';
   }
 
-  return `You are Mindline AI — a precise assistant that searches the user's WhatsApp and Gmail inbox.
-Today: ${new Date().toISOString().slice(0, 10)}
-Total messages in DB: ${totalMessages} | Messages given to you now: ${candidateCount}
+  return `You are Mindline AI — a smart personal assistant with full access to the user's WhatsApp and Gmail inbox.
+You can read every message, document, image, audio file, and attachment they've received.
+
+TODAY: ${new Date().toISOString().slice(0, 10)}
+DATABASE: ${totalMessages} total messages | ${candidateCount} relevant messages shown below
 ${memorySection}${conversationSection}
-${'='.repeat(60)}
-INBOX MESSAGES (sorted oldest to newest — entries near the end are MORE RECENT)
-Format: [index] FROM:sender CHAT:group TIME:absolute (RELATIVE_AGE)
-${'='.repeat(60)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INBOX DATA (sorted oldest → newest — bottom entries = most recent)
+Each entry has: [index] FROM | CHAT | TIME (relative age)
+Fields: CONTENT, FILE, IMAGE_DESCRIPTION, IMAGE_OCR_TEXT, DOC_SUMMARY, DOC_KEY_TEXT, DOC_TOPICS, DOC_ENTITIES, DOC_TYPE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${messageContext}
-${'='.repeat(60)}
-END OF INBOX DATA
-${'='.repeat(60)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-USER QUERY: "${userQuery}"
+USER: "${userQuery}"
 
-CRITICAL RULES:
-1. The INBOX MESSAGES section above is the ONLY source of truth. PRIOR CONVERSATION TURNS is background only — do NOT treat prior AI replies as inbox data.
-2. Time awareness: entries showing "just now" / "X min ago" / "X hours ago" are RECENT. Entries showing "X days/weeks/months ago" are OLD. Always note the relative age when answering.
-3. For "recent" or "latest" queries: prioritise entries with the smallest relative age values (bottom of the list = newest).
-4. For specific file/entity queries: search ALL entries for FILE, CONTENT, IMAGE_DESC, DOC_TOPICS fields.
-5. For file/document queries: list every FILE entry — bold the filename, state sender and relative age.
-6. NEVER say "I couldn't find" if matching FILE or CONTENT entries exist above.
-7. Cite sender + chat + relative time for every finding.
-8. If a document's content wasn't extracted, still report: filename, sender, time.
-9. Do NOT reproduce corrupted/binary content.
-10. Use bullet points, bold names and filenames.
+INSTRUCTIONS:
+1. ANSWER FROM THE INBOX DATA ABOVE — this is the user's real inbox. Search every field (CONTENT, FILE, IMAGE_DESCRIPTION, IMAGE_OCR_TEXT, DOC_SUMMARY, DOC_KEY_TEXT, DOC_ENTITIES).
+2. For "recent" / "latest" / "new" queries → entries near the BOTTOM are newest. Check relative ages.
+3. For file/document queries → look at FILE, DOC_SUMMARY, DOC_KEY_TEXT, DOC_TYPE fields. Report: filename (bold), sender, time, and what the doc contains.
+4. For image queries → look at IMAGE_DESCRIPTION and IMAGE_OCR_TEXT. Describe what the image shows and any text found in it.
+5. ALWAYS cite: **sender name**, chat/group name, and when it was sent (relative time like "2 hours ago").
+6. If a message has both text content AND a file/image, mention both.
+7. Use markdown: **bold** names and filenames, bullet points for lists, > blockquotes for quoting messages.
+8. If quoting a message, use the exact content — don't paraphrase.
+9. If the user asks about a document's contents, use DOC_SUMMARY and DOC_KEY_TEXT to explain what's in it.
+10. NEVER say "I couldn't find anything" if there ARE matching entries above — re-read the data carefully.
+11. If there are truly 0 relevant entries shown above (empty INBOX DATA), tell the user honestly "I don't see any matching messages in your inbox" and suggest refining their search or checking spelling. Do NOT make up fake messages.
+12. Prior conversation turns are for context only — do NOT treat old AI replies as inbox data.
+13. Keep answers focused and organized. Lead with the most important finding.
 
-Respond in this exact JSON (no text outside the JSON):
+Respond ONLY with this JSON (no text outside):
 {
-  "reply": "Detailed markdown answer. Bold sender names and filenames. Note relative time for every item. Mention senders by name when citing their messages.",
-  "suggestions": ["4 specific follow-up questions based on what was found"]
+  "reply": "Your markdown-formatted answer. Bold sender names, filenames. Cite relative times. Use bullet points for multiple items. Quote key content with > blockquotes when helpful.",
+  "suggestions": ["follow-up question 1", "follow-up question 2", "follow-up question 3", "follow-up question 4"]
 }`;  // B3: sourceIndices removed — match-based sources computed after reply
 }
 
@@ -1025,8 +1061,8 @@ export async function chat(
     return { message: memMsg, conversationId: sessionId, sessionId, sessionTitle: memTitle };
   }
 
-  // 4b. Handle web search queries via Gemini grounding
-  if (intent === 'web') {
+  // 4b. Handle web search OR general knowledge queries via Gemini grounding
+  if (intent === 'web' || intent === 'general') {
     const historyForWeb = getHistory(sessionId);
     const { reply: webReply, webSources, suggestions: webSuggestions } = await searchWeb(
       userQuery, historyForWeb.slice(0, -1), memory, modelId
@@ -1041,7 +1077,7 @@ export async function chat(
       suggestions: webSuggestions,
       stats: { messagesSearched: 0, sourcesFound: webSources.length },
       model: modelId,
-      intent: 'web',
+      intent: intent === 'web' ? 'web' : 'general',
     };
     pushMessage(sessionId, webMsg, userId);
     extractAndSaveMemory(userId, userQuery, webReply).catch(() => {});
@@ -1081,7 +1117,7 @@ export async function chat(
 
       // Use a different model on retry if premium fails
       const retryModelId = attempt > 0
-        ? (modelId === 'gemini-2.5-pro' ? 'gemini-2.5-flash' as ModelId : 'gemini-2.0-flash' as ModelId)
+        ? (modelId === 'gemini-3-pro' ? 'gemini-3-flash' as ModelId : 'gemini-2.5-flash' as ModelId)
         : modelId;
       const activeModel = attempt > 0 ? getModelInstance(retryModelId) || model : model;
 
@@ -1228,23 +1264,24 @@ export async function chatStream(
     return;
   }
 
-  // Handle web search in stream mode
-  if (streamIntent === 'web') {
+  // Handle web search OR general knowledge queries in stream mode
+  if (streamIntent === 'web' || streamIntent === 'general') {
     const historyForWebStream = getHistory(sessionId);
     const { reply: webReply, webSources, suggestions: webSuggestions } = await searchWeb(
       userQuery, historyForWebStream.slice(0, -1), streamMemory, modelId
     );
+    const intentLabel = streamIntent === 'web' ? 'web' : 'general';
     const webMsg: ChatMessage = {
       id: genId(), role: 'assistant', content: webReply,
       timestamp: new Date().toISOString(), sources: [], webSources,
       suggestions: webSuggestions,
-      stats: { messagesSearched: 0, sourcesFound: webSources.length }, model: modelId, intent: 'web',
+      stats: { messagesSearched: 0, sourcesFound: webSources.length }, model: modelId, intent: intentLabel,
     };
     pushMessage(sessionId, webMsg, userId);
     extractAndSaveMemory(userId, userQuery, webReply).catch(() => {});
     onChunk({ delta: webReply, done: false });
     const wTitle = sessionMetaStore.get(sessionId)?.title;
-    onChunk({ done: true, sources: [], webSources, suggestions: webSuggestions, stats: webMsg.stats!, sessionId, sessionTitle: wTitle, model: modelId, intent: 'web' });
+    onChunk({ done: true, sources: [], webSources, suggestions: webSuggestions, stats: webMsg.stats!, sessionId, sessionTitle: wTitle, model: modelId, intent: intentLabel });
     return;
   }
 

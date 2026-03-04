@@ -8,13 +8,12 @@ const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || '');
 // Latest Google AI Studio models (September 2025) in order of preference
 // Source: https://ai.google.dev/gemini-api/docs/models (Updated: 2025-09-29)
 const MODEL_NAMES = [
-  'gemini-2.5-flash',              // RECOMMENDED: Fast & intelligent (June 2025)
+  'gemini-3-flash',                // RECOMMENDED: Latest fast model
+  'gemini-3-pro',                  // Latest advanced reasoning model
+  'gemini-2.5-flash',              // Fast & intelligent (June 2025)
   'gemini-2.5-flash-lite',         // Fastest, cost-efficient (July 2025)
-  'gemini-2.5-pro',                // Most advanced, best reasoning (June 2025)
-  'gemini-2.0-flash',              // Second generation workhorse (Feb 2025)
-  'gemini-2.0-flash-lite',         // Second gen fast model (Feb 2025)
+  'gemini-2.5-pro',                // Advanced reasoning (June 2025)
   'gemini-1.5-flash',              // Legacy fast model (stable)
-  'gemini-1.5-pro',                // Legacy capable model (stable)
 ];
 
 let activeModel: any = null;

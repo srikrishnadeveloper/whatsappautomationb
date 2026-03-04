@@ -60,11 +60,24 @@ class InMemoryMessageStore {
       messages = messages.filter(m => m.priority === filters.priority);
     }
     if (filters?.search) {
-      const search = filters.search.toLowerCase();
-      messages = messages.filter(m => 
-        m.content.toLowerCase().includes(search) ||
-        m.sender.toLowerCase().includes(search)
-      );
+      const searchTerms = filters.search.toLowerCase().split(/\s+/).filter(t => t.length >= 2);
+      messages = messages.filter(m => {
+        // Build a comprehensive search blob from all fields
+        const blob = [
+          m.content,
+          m.sender,
+          m.chat_name || '',
+          m.metadata?.document?.fileName || '',
+          m.metadata?.imageAnalysis?.description || '',
+          m.metadata?.imageAnalysis?.extractedText || '',
+          m.metadata?.documentAnalysis?.summary || '',
+          m.metadata?.documentAnalysis?.extractedText || '',
+          m.metadata?.documentAnalysis?.topics?.join(' ') || '',
+          m.metadata?.documentAnalysis?.keyEntities?.join(' ') || '',
+        ].join(' ').toLowerCase();
+        // Match if ANY search term appears in the blob
+        return searchTerms.some(term => blob.includes(term));
+      });
     }
 
     const total = messages.length;

@@ -104,10 +104,11 @@ interface ChatSession {
 
 /* ── Fallback model list (shown before API loads or if API fails) ────────── */
 const FALLBACK_MODELS: ModelInfo[] = [
-  { id: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro',        tier: 'premium' },
-  { id: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash',      tier: 'fast'    },
-  { id: 'gemini-2.0-flash',      label: 'Gemini 2.0 Flash',      tier: 'fast'    },
-  { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite', tier: 'fast'    },
+  { id: 'gemini-3-pro',          label: 'Gemini 3 Pro',           tier: 'premium' },
+  { id: 'gemini-3-flash',        label: 'Gemini 3 Flash',         tier: 'fast'    },
+  { id: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro',         tier: 'premium' },
+  { id: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash',       tier: 'fast'    },
+  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite',  tier: 'lite'    },
 ]
 
 /* ── Conversation starters ──────────────────────────────────────────────── */
@@ -656,7 +657,7 @@ export default function SearchPage() {
 
   /* Model selection state — seed with fallback so dropdown always shows */
   const [models, setModels]             = useState<ModelInfo[]>(FALLBACK_MODELS)
-  const [currentModel, setCurrentModel] = useState<string>('gemini-2.5-flash')
+  const [currentModel, setCurrentModel] = useState<string>('gemini-3-flash')
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)

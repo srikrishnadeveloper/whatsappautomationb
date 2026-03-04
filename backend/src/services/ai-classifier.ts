@@ -32,10 +32,10 @@ export function initGemini() {
 
   try {
     genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    // gemini-2.5-flash for vision — better image understanding + OCR accuracy
-    visionModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-    log.success('Gemini AI initialized', 'text=gemini-2.0-flash | vision=gemini-2.5-flash');
+    model = genAI.getGenerativeModel({ model: 'gemini-3-flash' });
+    // gemini-3-flash for vision — best image understanding + OCR accuracy
+    visionModel = genAI.getGenerativeModel({ model: 'gemini-3-flash' });
+    log.success('Gemini AI initialized', 'text=gemini-3-flash | vision=gemini-3-flash');
     return true;
   } catch (error: any) {
     log.error('Failed to initialize Gemini', error.message);
@@ -113,18 +113,23 @@ export async function analyzeImageWithGemini(
       },
     } as any;
 
-    const prompt = `Analyze this WhatsApp image precisely and return ONLY JSON (no markdown):
+    const prompt = `You are analyzing an image received in a WhatsApp chat. Extract ALL information visible.
+
+Return ONLY valid JSON:
 {
-  "description": "concise 1-2 sentence description of what you see",
-  "extractedText": "ALL visible text, numbers, dates, names exactly as written — empty string if none",
-  "hasActionableContent": true/false,
+  "description": "Detailed description of the image — what it shows, context, any objects/people/places visible. 2-4 sentences.",
+  "extractedText": "EVERY piece of text visible in the image — numbers, dates, names, labels, handwriting, screenshots of text, watermarks, URLs. If no text, return empty string.",
+  "hasActionableContent": true or false,
   "suggestedCategory": "work|study|personal|urgent|casual|spam"
 }
 
 Rules:
-- extractedText must capture every word, number, deadline, meeting time visible
-- hasActionableContent = true if image shows tasks, deadlines, meeting invites, invoices, documents, schedules
-- Be precise about dates, times, names visible in the image
+- If this is a screenshot of a conversation, extract the FULL conversation text
+- If this is a document photo (invoice, receipt, ticket, ID), extract ALL text/numbers
+- If this is a schedule/calendar, extract every event, date and time
+- If this is a meme or social media post, describe it and extract any text overlay
+- hasActionableContent = true if: tasks, deadlines, invoices, meeting info, tickets, assignments, medical info
+- Be thorough — the extracted text will be used for search later
 ${caption ? `\nCaption from sender: "${caption}"` : ''}`;
 
     const result = await visionModel.generateContent([prompt, imagePart]);
@@ -255,41 +260,53 @@ export async function analyzeDocumentWithGemini(
           },
         } as any,
       ];
-      prompt = `Analyze this PDF document and return ONLY JSON (no markdown):
+      prompt = `Analyze this PDF document thoroughly. Extract ALL meaningful content.
+
+Return ONLY valid JSON:
 {
-  "summary": "2-3 sentence summary of the document",
-  "extractedText": "ALL key text: names, dates, deadlines, amounts, action items — exact as written. Max 1000 chars.",
-  "hasActionableContent": true/false,
+  "summary": "Comprehensive 3-5 sentence summary of the document — what it is, its purpose, key findings/content.",
+  "extractedText": "ALL key content: names, dates, deadlines, amounts, action items, headings, conclusions, important paragraphs — exact as written. Max 2000 chars.",
+  "hasActionableContent": true or false,
   "suggestedCategory": "work|study|personal|urgent|casual|spam",
-  "documentType": "invoice|assignment|report|notes|letter|form|schedule|presentation|spreadsheet|other",
-  "keyEntities": ["entity1", "entity2"]
+  "documentType": "invoice|assignment|report|notes|letter|form|schedule|presentation|spreadsheet|contract|receipt|ticket|resume|syllabus|manual|other",
+  "keyEntities": ["every important name", "date", "amount", "deadline", "organization", "phone number", "email address"]
 }
+
 Rules:
-- extractedText must capture every deadline, name, amount, date, task
-- keyEntities = important names, dates, amounts, headings
-- hasActionableContent = true if document contains tasks, deadlines, things to do
-- Be thorough — this text will be used for search later`;
+- extractedText should capture EVERYTHING important — this text will be searchable later
+- keyEntities = every name, date, monetary amount, deadline, organization, contact info
+- For assignments/homework: extract questions, due dates, instructions
+- For invoices/receipts: extract amounts, vendor names, dates, items
+- For schedules: extract every event with date and time
+- For reports: extract key findings, conclusions, recommendations
+- hasActionableContent = true if document contains tasks, deadlines, things to do, payments due
+- Be as thorough as possible`;
     } else if (isSupported || mimeType.startsWith('text/')) {
       // For text files, convert buffer to string
       const textContent = docBuffer.toString('utf-8').slice(0, 8000); // Truncate for token safety
       parts = [];
-      prompt = `Analyze this document content and return ONLY JSON (no markdown):
+      prompt = `Analyze this document content thoroughly and extract ALL meaningful information.
 
 DOCUMENT NAME: ${fileName}
 DOCUMENT CONTENT:
 ${textContent}
 
+Return ONLY valid JSON:
 {
-  "summary": "2-3 sentence summary of the document",
-  "extractedText": "ALL key text: names, dates, deadlines, amounts, action items — exact as written. Max 1000 chars.",
-  "hasActionableContent": true/false,
+  "summary": "Comprehensive 3-5 sentence summary — what the document is, its purpose, key content.",
+  "extractedText": "ALL key content: names, dates, deadlines, amounts, action items, headings, conclusions, important sections — exact as written. Max 2000 chars.",
+  "hasActionableContent": true or false,
   "suggestedCategory": "work|study|personal|urgent|casual|spam",
-  "documentType": "invoice|assignment|report|notes|letter|form|schedule|presentation|spreadsheet|other",
-  "keyEntities": ["entity1", "entity2"]
+  "documentType": "invoice|assignment|report|notes|letter|form|schedule|presentation|spreadsheet|contract|receipt|ticket|resume|syllabus|manual|other",
+  "keyEntities": ["every important name", "date", "amount", "deadline", "organization"]
 }
+
 Rules:
-- extractedText must capture every deadline, name, amount, date, task
-- keyEntities = important names, dates, amounts, headings
+- extractedText should include all important content — it will be searchable later
+- For code files: describe what the code does, key functions, imports
+- For spreadsheets/CSV: describe columns, key data points, totals
+- For presentations: extract slide titles and key bullet points
+- keyEntities = every name, date, amount, deadline, organization mentioned
 - hasActionableContent = true if document contains tasks, deadlines, things to do`;
     } else {
       // Unsupported type — return just filename-based fallback
