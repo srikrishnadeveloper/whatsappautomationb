@@ -26,6 +26,10 @@ import {
   listSessionsFromDb,
   deleteSession,
   renameSession,
+  getUserMemoryAll,
+  loadUserMemory,
+  saveUserMemoryFact,
+  deleteUserMemoryFact,
   TaskActionResult,
   ModelId,
 } from '../services/ai-chat';
@@ -594,6 +598,66 @@ router.delete('/history', async (req: Request, res: Response) => {
     res.json({ success: true, message: 'Conversation cleared' });
   } catch (error: any) {
     log.error('Clear chat history error', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ── Memory Management Endpoints ──────────────────────────────────────────────
+
+/**
+ * GET /api/chat/memory
+ * List all remembered facts for the current user.
+ */
+router.get('/memory', async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const facts = await getUserMemoryAll(userId);
+    res.json({ success: true, data: { facts, count: facts.length } });
+  } catch (error: any) {
+    log.error('Get memory error', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/chat/memory
+ * Manually save a memory fact. Body: { key: string, value: string }
+ */
+router.post('/memory', async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { key, value } = req.body;
+    if (!key || !value) return res.status(400).json({ success: false, error: 'key and value are required' });
+    if (typeof key !== 'string' || typeof value !== 'string') {
+      return res.status(400).json({ success: false, error: 'key and value must be strings' });
+    }
+    await saveUserMemoryFact(userId, key.trim().slice(0, 100), value.trim().slice(0, 500), 'manual');
+    res.json({ success: true, message: `Saved: ${key} = ${value}` });
+  } catch (error: any) {
+    log.error('Save memory error', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/chat/memory
+ * Clear all memory facts for the current user. Optional ?key=xxx to delete one.
+ */
+router.delete('/memory', async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const key = req.query.key as string | undefined;
+    if (key) {
+      await deleteUserMemoryFact(userId, key);
+      res.json({ success: true, message: `Deleted memory fact: ${key}` });
+    } else {
+      // Clear all: load all facts and delete them one by one
+      const facts = await getUserMemoryAll(userId);
+      await Promise.all(facts.map(f => deleteUserMemoryFact(userId, f.key)));
+      res.json({ success: true, message: `Cleared ${facts.length} memory facts` });
+    }
+  } catch (error: any) {
+    log.error('Delete memory error', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });

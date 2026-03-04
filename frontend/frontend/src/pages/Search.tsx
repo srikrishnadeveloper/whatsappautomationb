@@ -43,6 +43,8 @@ import {
   Edit3,
   Menu,
   X,
+  Globe,
+  Brain,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { API_BASE, authFetch } from '../services/api'
@@ -77,11 +79,13 @@ interface ChatMessage {
   content: string
   timestamp: string
   sources?: ChatSource[]
+  webSources?: { title: string; uri: string; snippet?: string }[]
   suggestions?: string[]
   stats?: { messagesSearched: number; sourcesFound: number }
   model?: string
   retryCount?: number
   taskAction?: TaskActionResult
+  intent?: 'inbox' | 'web' | 'general' | 'task' | 'memory'
 }
 
 interface ModelInfo {
@@ -489,6 +493,18 @@ function AiBubble({
               {message.model.replace('gemini-', '').replace('-preview', '').replace(/-\d{2}-\d{2}$/, '')}
             </span>
           )}
+          {message.intent === 'web' && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-[9px] font-medium text-blue-600 dark:text-blue-400">
+              <Globe className="w-2.5 h-2.5" />
+              Web
+            </span>
+          )}
+          {message.intent === 'memory' && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 text-[9px] font-medium text-purple-600 dark:text-purple-400">
+              <Brain className="w-2.5 h-2.5" />
+              Memory
+            </span>
+          )}
           {message.retryCount && message.retryCount > 0 && (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-[9px] font-medium text-amber-600 dark:text-amber-400">
               <RefreshCw className="w-2.5 h-2.5" />
@@ -571,6 +587,31 @@ function AiBubble({
         {/* Sources */}
         {message.sources && done && (
           <SourceList sources={message.sources} onDownload={onDownload} />
+        )}
+
+        {/* Web Sources */}
+        {message.webSources && message.webSources.length > 0 && done && (
+          <div className="mt-2">
+            <p className="text-[10px] font-semibold text-[var(--text-muted)] mb-1.5 flex items-center gap-1">
+              <Globe className="w-3 h-3" /> Web Sources
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {message.webSources.map((ws, i) => (
+                <a
+                  key={i}
+                  href={ws.uri}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-[10px] font-medium text-blue-600 dark:text-blue-400 hover:border-blue-400 hover:bg-blue-100 dark:hover:bg-blue-800/30 transition-all max-w-[200px] truncate"
+                  title={ws.title || ws.uri}
+                >
+                  <Globe className="w-2.5 h-2.5 flex-shrink-0" />
+                  <span className="truncate">{ws.title || new URL(ws.uri).hostname}</span>
+                  <ExternalLink className="w-2.5 h-2.5 flex-shrink-0" />
+                </a>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* Suggestion chips */}
@@ -848,10 +889,12 @@ export default function SearchPage() {
               setMessages(p => p.map(m => m.id === streamMsgId ? {
                 ...m,
                 sources: chunk.sources || [],
+                webSources: chunk.webSources || [],
                 suggestions: chunk.suggestions || [],
                 stats: chunk.stats,
                 model: chunk.model,
                 taskAction: chunk.taskAction,
+                intent: chunk.intent,
               } : m))
               // A5 fix: update sidebar title with backend-computed title
               if (finalSid) {
@@ -973,8 +1016,9 @@ export default function SearchPage() {
             const chunk = JSON.parse(event.slice(6))
             if (chunk.done) {
               setMessages(p => p.map(m => m.id === streamMsgId ? {
-                ...m, sources: chunk.sources || [], suggestions: chunk.suggestions || [],
-                stats: chunk.stats, model: chunk.model,
+                ...m, sources: chunk.sources || [], webSources: chunk.webSources || [],
+                suggestions: chunk.suggestions || [],
+                stats: chunk.stats, model: chunk.model, intent: chunk.intent,
               } : m))
             } else if (chunk.delta) {
               setMessages(p => p.map(m => m.id === streamMsgId ? { ...m, content: m.content + chunk.delta } : m))

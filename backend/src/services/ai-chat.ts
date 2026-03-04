@@ -915,7 +915,8 @@ function buildConversationPrompt(
   history: ChatMessage[],
   messageContext: string,
   candidateCount: number,
-  totalMessages: number
+  totalMessages: number,
+  memorySection = ''
 ): string {
   // Keep last 16 turns for better follow-up context (B1 fix)
   const recentHistory = history.slice(-16);
@@ -942,7 +943,7 @@ function buildConversationPrompt(
   return `You are Mindline AI — a precise assistant that searches the user's WhatsApp and Gmail inbox.
 Today: ${new Date().toISOString().slice(0, 10)}
 Total messages in DB: ${totalMessages} | Messages given to you now: ${candidateCount}
-${conversationSection}
+${memorySection}${conversationSection}
 ${'='.repeat(60)}
 INBOX MESSAGES (sorted oldest to newest — entries near the end are MORE RECENT)
 Format: [index] FROM:sender CHAT:group TIME:absolute (RELATIVE_AGE)
@@ -1024,7 +1025,55 @@ export async function chat(
       .reverse();
   }
 
-  // 4. If no AI available, return a basic response
+  // 4. Load user memory + detect intent
+  const memory = await loadUserMemory(userId);
+  const memSection = buildMemorySection(memory);
+  const intent = detectQueryIntent(userQuery, candidates.length);
+
+  // 4a. Handle explicit memory commands — no AI model needed
+  if (intent === 'memory') {
+    const memReply = await handleMemoryUpdate(userId, userQuery);
+    const memMsg: ChatMessage = {
+      id: genId(),
+      role: 'assistant',
+      content: memReply,
+      timestamp: new Date().toISOString(),
+      sources: [],
+      suggestions: ['What do you know about me?', 'Update my preferences', 'Forget everything about me'],
+      stats: { messagesSearched: 0, sourcesFound: 0 },
+      model: modelId,
+      intent: 'memory',
+    };
+    pushMessage(sessionId, memMsg, userId);
+    const memTitle = sessionMetaStore.get(sessionId)?.title;
+    return { message: memMsg, conversationId: sessionId, sessionId, sessionTitle: memTitle };
+  }
+
+  // 4b. Handle web search queries via Gemini grounding
+  if (intent === 'web') {
+    const historyForWeb = getHistory(sessionId);
+    const { reply: webReply, webSources, suggestions: webSuggestions } = await searchWeb(
+      userQuery, historyForWeb.slice(0, -1), memory, modelId
+    );
+    const webMsg: ChatMessage = {
+      id: genId(),
+      role: 'assistant',
+      content: webReply,
+      timestamp: new Date().toISOString(),
+      sources: [],
+      webSources,
+      suggestions: webSuggestions,
+      stats: { messagesSearched: 0, sourcesFound: webSources.length },
+      model: modelId,
+      intent: 'web',
+    };
+    pushMessage(sessionId, webMsg, userId);
+    extractAndSaveMemory(userId, userQuery, webReply).catch(() => {});
+    const webTitle = sessionMetaStore.get(sessionId)?.title;
+    return { message: webMsg, conversationId: sessionId, sessionId, sessionTitle: webTitle };
+  }
+
+  // 5. If no AI available, return a basic response
   const model = getModelInstance(modelId);
   if (!model) {
     const fallbackMsg: ChatMessage = {
@@ -1052,7 +1101,7 @@ export async function chat(
     try {
       const messageContext = buildMessageContext(candidates);
       const history = getHistory(sessionId);
-      const prompt = buildConversationPrompt(userQuery, history.slice(0, -1), messageContext, candidates.length, totalMessages);
+      const prompt = buildConversationPrompt(userQuery, history.slice(0, -1), messageContext, candidates.length, totalMessages, memSection);
 
       // Use a different model on retry if premium fails
       const retryModelId = attempt > 0
@@ -1099,9 +1148,12 @@ export async function chat(
         stats: { messagesSearched: totalMessages, sourcesFound: sources.length },
         model: attempt > 0 ? retryModelId : modelId,
         retryCount: attempt > 0 ? attempt : undefined,
+        intent,
       };
 
       pushMessage(sessionId, assistantMsg, userId);
+      // Background memory extraction — fire-and-forget
+      extractAndSaveMemory(userId, userQuery, parsed.reply || '').catch(() => {});
       log.info('AI Chat response',
         `model=${attempt > 0 ? retryModelId : modelId} | query="${userQuery.slice(0, 40)}" | sources=${sources.length} | total=${totalMessages}`);
 
@@ -1139,7 +1191,7 @@ export async function chat(
 
 export type StreamChunk =
   | { delta: string; done: false }
-  | { done: true; sources: ChatSource[]; suggestions: string[]; stats: { messagesSearched: number; sourcesFound: number }; sessionId: string; sessionTitle?: string; model: string };
+  | { done: true; sources: ChatSource[]; webSources?: WebSource[]; suggestions: string[]; stats: { messagesSearched: number; sourcesFound: number }; sessionId: string; sessionTitle?: string; model: string; intent?: QueryIntent };
 
 export async function chatStream(
   userQuery: string,
@@ -1179,15 +1231,56 @@ export async function chatStream(
     ).slice(0, 300).reverse();
   }
 
+  // Load memory + detect intent
+  const streamMemory = await loadUserMemory(userId);
+  const streamMemSection = buildMemorySection(streamMemory);
+  const streamIntent = detectQueryIntent(userQuery, candidates.length);
+
+  // Handle memory commands in stream mode
+  if (streamIntent === 'memory') {
+    const memReply = await handleMemoryUpdate(userId, userQuery);
+    const memMsg: ChatMessage = {
+      id: genId(), role: 'assistant', content: memReply,
+      timestamp: new Date().toISOString(), sources: [], webSources: [],
+      suggestions: ['What do you know about me?', 'Update my preferences', 'Forget everything about me'],
+      stats: { messagesSearched: 0, sourcesFound: 0 }, model: modelId, intent: 'memory',
+    };
+    pushMessage(sessionId, memMsg, userId);
+    onChunk({ delta: memReply, done: false });
+    const mTitle = sessionMetaStore.get(sessionId)?.title;
+    onChunk({ done: true, sources: [], webSources: [], suggestions: memMsg.suggestions!, stats: memMsg.stats!, sessionId, sessionTitle: mTitle, model: modelId, intent: 'memory' });
+    return;
+  }
+
+  // Handle web search in stream mode
+  if (streamIntent === 'web') {
+    const historyForWebStream = getHistory(sessionId);
+    const { reply: webReply, webSources, suggestions: webSuggestions } = await searchWeb(
+      userQuery, historyForWebStream.slice(0, -1), streamMemory, modelId
+    );
+    const webMsg: ChatMessage = {
+      id: genId(), role: 'assistant', content: webReply,
+      timestamp: new Date().toISOString(), sources: [], webSources,
+      suggestions: webSuggestions,
+      stats: { messagesSearched: 0, sourcesFound: webSources.length }, model: modelId, intent: 'web',
+    };
+    pushMessage(sessionId, webMsg, userId);
+    extractAndSaveMemory(userId, userQuery, webReply).catch(() => {});
+    onChunk({ delta: webReply, done: false });
+    const wTitle = sessionMetaStore.get(sessionId)?.title;
+    onChunk({ done: true, sources: [], webSources, suggestions: webSuggestions, stats: webMsg.stats!, sessionId, sessionTitle: wTitle, model: modelId, intent: 'web' });
+    return;
+  }
+
   const model = getModelInstance(modelId);
   if (!model) {
-    onChunk({ done: true, sources: [], suggestions: [], stats: { messagesSearched: totalMessages, sourcesFound: 0 }, sessionId, model: modelId });
+    onChunk({ done: true, sources: [], webSources: [], suggestions: [], stats: { messagesSearched: totalMessages, sourcesFound: 0 }, sessionId, model: modelId });
     return;
   }
 
   const history = getHistory(sessionId);
   const messageContext = buildMessageContext(candidates);
-  const prompt = buildConversationPrompt(userQuery, history.slice(0, -1), messageContext, candidates.length, totalMessages);
+  const prompt = buildConversationPrompt(userQuery, history.slice(0, -1), messageContext, candidates.length, totalMessages, streamMemSection);
 
   try {
     const result = await model.generateContentStream(prompt);
@@ -1238,11 +1331,13 @@ export async function chatStream(
       suggestions: (parsed.suggestions || []).slice(0, 4),
       stats: { messagesSearched: totalMessages, sourcesFound: sources.length },
       model: modelId,
+      intent: streamIntent,
     };
     pushMessage(sessionId, assistantMsg, userId);
+    extractAndSaveMemory(userId, userQuery, reply).catch(() => {});
 
     const sessionTitle = sessionMetaStore.get(sessionId)?.title;
-    onChunk({ done: true, sources, suggestions: assistantMsg.suggestions || [], stats: assistantMsg.stats!, sessionId, sessionTitle, model: modelId });
+    onChunk({ done: true, sources, webSources: [], suggestions: assistantMsg.suggestions || [], stats: assistantMsg.stats!, sessionId, sessionTitle, model: modelId, intent: streamIntent });
 
   } catch (err: any) {
     if (signal?.aborted) return;
