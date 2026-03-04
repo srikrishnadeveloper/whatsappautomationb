@@ -7,7 +7,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { supabase } from '../config/supabase';
 import { Session, User as SupabaseUser } from '@supabase/supabase-js';
-import { API_BASE, authFetch } from '../services/api';
+import { API_BASE } from '../services/api';
 
 interface User {
   id: string;
@@ -121,7 +121,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       if (!supabaseAccessToken) return;
       bearerToken = supabaseAccessToken;
       userId = explicitUserId; // passed from call site where userId is known
-      payload = { ...sessionOrCached, expiresIn: 3600 };
+      payload = { ...(sessionOrCached as CachedGmailTokens), expiresIn: 3600 };
     }
 
     // 2️⃣ Try to persist to backend (idempotent upsert)
