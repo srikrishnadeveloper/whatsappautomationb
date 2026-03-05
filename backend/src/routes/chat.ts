@@ -590,11 +590,12 @@ router.get('/history', async (req: Request, res: Response) => {
  */
 router.delete('/history', async (req: Request, res: Response) => {
   try {
+    const userId = req.userId!;
     const sessionId = (req.query.sessionId as string) || '';
     if (!sessionId) {
       return res.status(400).json({ success: false, error: 'sessionId query param is required' });
     }
-    await clearChatHistory(sessionId);
+    await clearChatHistory(sessionId, userId);
     res.json({ success: true, message: 'Conversation cleared' });
   } catch (error: any) {
     log.error('Clear chat history error', error.message);

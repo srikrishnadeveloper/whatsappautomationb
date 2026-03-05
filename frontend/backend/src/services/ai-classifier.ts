@@ -24,8 +24,8 @@ export function initGemini() {
 
   try {
     genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    log.success('Gemini AI initialized', 'Using gemini-2.0-flash');
+    model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+    log.success('Gemini AI initialized', 'Using gemini-3-flash-preview');
     return true;
   } catch (error: any) {
     log.error('Failed to initialize Gemini', error.message);

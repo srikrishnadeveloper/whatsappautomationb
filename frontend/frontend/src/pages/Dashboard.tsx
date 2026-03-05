@@ -303,11 +303,17 @@ function ExpandedWA({ msg }: { msg: WAMessage }) {
                 </div>
               )}
 
-              {/* Not in cache — friendly message */}
+              {/* Not loaded — show placeholder with description if available */}
               {imgFailed && !imgLoading && (
-                <div className="flex items-center gap-2 px-3 py-3 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-100 dark:border-amber-900 text-xs text-amber-700 dark:text-amber-400">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                  <span>Image not in cache — received before this server session or server was restarted</span>
+                <div className="flex flex-col items-center justify-center gap-2 px-4 py-6 bg-gradient-to-b from-slate-50 to-slate-100 dark:from-slate-800/50 dark:to-slate-900/50 border-b border-[var(--border-subtle)]">
+                  <ImageIcon className="w-10 h-10 text-slate-300 dark:text-slate-600" />
+                  {msg.metadata?.imageAnalysis?.description && msg.metadata.imageAnalysis.description !== '[Image]' ? (
+                    <p className="text-xs text-center text-[var(--text-secondary)] max-w-sm leading-relaxed">
+                      {msg.metadata.imageAnalysis.description}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-[var(--text-muted)]">Image preview unavailable</p>
+                  )}
                 </div>
               )}
             </>
@@ -386,10 +392,7 @@ function ExpandedWA({ msg }: { msg: WAMessage }) {
           {dlError && mediaType !== 'image' && (
             <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border-t border-amber-100 dark:border-amber-900 text-xs text-amber-700 dark:text-amber-400">
               <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-              <span>{dlError}</span>
-              <span className="ml-auto text-[10px]">
-                {!messageKey ? 'No message key' : 'File not in cache — received before server restart?'}
-              </span>
+              <span>Download unavailable — file may no longer be accessible</span>
             </div>
           )}
 
@@ -408,9 +411,9 @@ function ExpandedWA({ msg }: { msg: WAMessage }) {
               <Paperclip className="w-4 h-4 shrink-0" />
               <span>
                 {msg.content === '[Media/No Content]'
-                  ? 'Media message — format not supported for preview (video, audio, or sticker)'
+                  ? 'Media message received'
                   : msg.content === '[Image - analysis failed]'
-                  ? 'Image received but could not be analyzed (Gemini Vision error)'
+                  ? 'Image received'
                   : msg.content.replace(/^\[|\]$/g, '')}
               </span>
             </div>
@@ -423,14 +426,17 @@ function ExpandedWA({ msg }: { msg: WAMessage }) {
       )}
 
       {/* AI Vision Analysis section — shown whenever Gemini analyzed this image */}
-      {msg.metadata?.imageAnalysis && (msg.metadata.imageAnalysis.description || msg.metadata.imageAnalysis.extractedText) && (
+      {msg.metadata?.imageAnalysis && (
+        (msg.metadata.imageAnalysis.description && msg.metadata.imageAnalysis.description !== '[Image]') ||
+        msg.metadata.imageAnalysis.extractedText
+      ) && (
         <div className="rounded-lg border border-blue-100 dark:border-blue-900 overflow-hidden">
           <div className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/30 border-b border-blue-100 dark:border-blue-900">
             <Zap className="w-3 h-3 text-blue-500" />
             <p className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider">Gemini Vision Analysis</p>
           </div>
           <div className="p-3 bg-blue-50/40 dark:bg-blue-900/10 space-y-2">
-            {msg.metadata.imageAnalysis.description && (
+            {msg.metadata.imageAnalysis.description && msg.metadata.imageAnalysis.description !== '[Image]' && (
               <div>
                 <p className="text-[10px] font-semibold text-blue-500 uppercase tracking-wide mb-0.5">Description</p>
                 <p className="text-xs text-[var(--text-primary)] leading-relaxed">

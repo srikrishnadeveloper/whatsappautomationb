@@ -51,8 +51,11 @@ const AUTO_START_WHATSAPP = process.env.AUTO_START_WHATSAPP !== 'false';
 // Trust proxy for rate limiting behind reverse proxies (Render, Heroku, etc.)
 app.set('trust proxy', 1);
 
-// Security middleware
-app.use(helmet());
+// Security middleware — allow cross-origin resource sharing for media endpoints
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  crossOriginEmbedderPolicy: false,
+}));
 
 // CORS - strict allowed origins
 const allowedOrigins = [

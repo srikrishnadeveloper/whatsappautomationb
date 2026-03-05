@@ -32,10 +32,10 @@ export function initGemini() {
 
   try {
     genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    model = genAI.getGenerativeModel({ model: 'gemini-3-flash' });
-    // gemini-3-flash for vision — best image understanding + OCR accuracy
-    visionModel = genAI.getGenerativeModel({ model: 'gemini-3-flash' });
-    log.success('Gemini AI initialized', 'text=gemini-3-flash | vision=gemini-3-flash');
+    model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+    // gemini-3-flash-preview for vision — best image understanding + OCR accuracy
+    visionModel = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+    log.success('Gemini AI initialized', 'text=gemini-3-flash-preview | vision=gemini-3-flash-preview');
     return true;
   } catch (error: any) {
     log.error('Failed to initialize Gemini', error.message);
@@ -90,9 +90,9 @@ export async function analyzeImageWithGemini(
   caption: string = ''
 ): Promise<ImageAnalysisResult> {
   const fallback: ImageAnalysisResult = {
-    description: caption || '[Image]',
+    description: caption || 'Image received (analysis pending)',
     extractedText: '',
-    combinedContent: caption || '[Image - no analysis available]',
+    combinedContent: caption || '[Image received]',
     hasActionableContent: false,
     suggestedCategory: 'casual',
     mimeType,

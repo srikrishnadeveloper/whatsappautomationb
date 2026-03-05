@@ -70,7 +70,7 @@ export async function webSearch(query: string): Promise<WebSearchResponse> {
   try {
     // Gemini 3 Flash supports Google Search grounding natively
     const model = ai.getGenerativeModel({
-      model: 'gemini-3-flash',
+      model: 'gemini-3-flash-preview',
       tools: [{ googleSearch: {} }] as any,
     });
 

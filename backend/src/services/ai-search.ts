@@ -123,7 +123,7 @@ export function initSearchAI() {
 
   try {
     genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    model = genAI.getGenerativeModel({ model: 'gemini-3-flash' });
+    model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
     log.success('AI Search initialized', 'Ready for intelligent queries');
     return true;
   } catch (error: any) {

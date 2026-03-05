@@ -104,11 +104,10 @@ interface ChatSession {
 
 /* ── Fallback model list (shown before API loads or if API fails) ────────── */
 const FALLBACK_MODELS: ModelInfo[] = [
-  { id: 'gemini-3-pro',          label: 'Gemini 3 Pro',           tier: 'premium' },
-  { id: 'gemini-3-flash',        label: 'Gemini 3 Flash',         tier: 'fast'    },
-  { id: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro',         tier: 'premium' },
-  { id: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash',       tier: 'fast'    },
-  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite',  tier: 'lite'    },
+  { id: 'gemini-3.1-pro-preview',        label: 'Gemini 3.1 Pro',         tier: 'premium' },
+  { id: 'gemini-3-flash-preview',        label: 'Gemini 3 Flash',         tier: 'fast'    },
+  { id: 'gemini-3.1-flash-lite-preview', label: 'Gemini 3.1 Flash Lite',  tier: 'lite'    },
+  { id: 'gemini-2.5-flash',              label: 'Gemini 2.5 Flash',       tier: 'fast'    },
 ]
 
 /* ── Conversation starters ──────────────────────────────────────────────── */
@@ -223,6 +222,30 @@ function inlineFmt(t: string): string {
 
 function renderMd(text: string) {
   return text.split('\n').map((line, i) => {
+    // Horizontal rule
+    if (line.trim().match(/^[-*_]{3,}$/)) {
+      return <hr key={i} className="my-3 border-[var(--border-subtle)]" />
+    }
+    // Headers
+    if (line.match(/^### /)) {
+      return <h3 key={i} className="text-sm font-bold text-[var(--text-primary)] mt-3 mb-1" dangerouslySetInnerHTML={{ __html: inlineFmt(line.replace(/^### /, '')) }} />
+    }
+    if (line.match(/^## /)) {
+      return <h2 key={i} className="text-base font-bold text-[var(--text-primary)] mt-3 mb-1" dangerouslySetInnerHTML={{ __html: inlineFmt(line.replace(/^## /, '')) }} />
+    }
+    if (line.match(/^# /)) {
+      return <h1 key={i} className="text-lg font-bold text-[var(--text-primary)] mt-3 mb-1" dangerouslySetInnerHTML={{ __html: inlineFmt(line.replace(/^# /, '')) }} />
+    }
+    // Blockquote
+    if (line.match(/^>\s?/)) {
+      const content = line.replace(/^>\s?/, '')
+      return (
+        <blockquote key={i} className="border-l-3 border-[var(--accent-primary)] pl-3 py-0.5 my-1 text-[var(--text-secondary)] italic bg-[var(--bg-surface-soft)] rounded-r-md">
+          <span dangerouslySetInnerHTML={{ __html: inlineFmt(content) }} />
+        </blockquote>
+      )
+    }
+    // Bullet list
     if (line.match(/^[-•]\s/)) {
       const c = line.replace(/^[-•]\s/, '')
       return (
@@ -232,7 +255,21 @@ function renderMd(text: string) {
         </div>
       )
     }
+    // Numbered list
+    if (line.match(/^\d+\.\s/)) {
+      const match = line.match(/^(\d+)\.\s(.*)/)
+      if (match) {
+        return (
+          <div key={i} className="flex items-start gap-2 ml-1 my-0.5">
+            <span className="text-xs font-semibold text-[var(--text-muted)] mt-0.5 min-w-[1.2em] text-right flex-shrink-0">{match[1]}.</span>
+            <span dangerouslySetInnerHTML={{ __html: inlineFmt(match[2]) }} />
+          </div>
+        )
+      }
+    }
+    // Empty line
     if (line.trim() === '') return <div key={i} className="h-2" />
+    // Default paragraph
     return <p key={i} className="my-0.5" dangerouslySetInnerHTML={{ __html: inlineFmt(line) }} />
   })
 }
@@ -657,7 +694,7 @@ export default function SearchPage() {
 
   /* Model selection state — seed with fallback so dropdown always shows */
   const [models, setModels]             = useState<ModelInfo[]>(FALLBACK_MODELS)
-  const [currentModel, setCurrentModel] = useState<string>('gemini-3-flash')
+  const [currentModel, setCurrentModel] = useState<string>('gemini-3-flash-preview')
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
@@ -955,9 +992,13 @@ export default function SearchPage() {
   const downloadMedia = async (key: string, name?: string) => {
     try {
       // Use direct URL since the media endpoint has no auth requirement
+      // The backend will try: in-memory → disk → re-download from WhatsApp
       const directUrl = getDirectMediaUrl(key)
       const r = await fetch(directUrl)
-      if (!r.ok) throw new Error('Not available')
+      if (!r.ok) {
+        const err = await r.json().catch(() => null)
+        throw new Error(err?.error || 'Download failed')
+      }
       const blob = await r.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -965,8 +1006,10 @@ export default function SearchPage() {
       a.download = name || `media_${key}`
       a.click()
       URL.revokeObjectURL(url)
-    } catch {
-      alert('Media file is no longer in cache. It will be re-cached when the message is received again.')
+    } catch (e: any) {
+      setError(e.message || 'File is no longer available. It may have expired on WhatsApp servers.')
+      // Auto-clear the error after 5 seconds
+      setTimeout(() => setError(null), 5000)
     }
   }
 

@@ -156,7 +156,7 @@ export async function extractAndStoreMemory(
   if (!ai) return;
 
   try {
-    const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
+    const model = ai.getGenerativeModel({ model: 'gemini-3.1-flash-lite-preview' });
 
     const prompt = `You are extracting user facts from a conversation turn to remember for future chats.
 
@@ -227,7 +227,7 @@ export async function handleMemoryCommand(
     const ai = getGenAI();
     if (ai) {
       try {
-        const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
+        const model = ai.getGenerativeModel({ model: 'gemini-3.1-flash-lite-preview' });
         const result = await model.generateContent(
           `Convert this memory to a key-value pair. Return ONLY JSON {"key":"snake_case","value":"string"}.\nFact: "${fact}"`
         );

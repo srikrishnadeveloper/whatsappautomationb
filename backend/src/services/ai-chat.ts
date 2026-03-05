@@ -12,7 +12,7 @@
  *  - Auto-retry on AI failures (up to 2 retries)
  *  - Corrupted document content filtering
  *  - Source citations with full media references
- *  - File analysis: documents, images, audio
+ *  - File analysis: documents, images
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -27,16 +27,15 @@ let genAI: GoogleGenerativeAI | null = null;
 // ── Supported models ────────────────────────────────────────────────────────
 
 export const AVAILABLE_MODELS = [
-  { id: 'gemini-3-pro',          label: 'Gemini 3 Pro',           tier: 'premium' },
-  { id: 'gemini-3-flash',        label: 'Gemini 3 Flash',         tier: 'fast'    },
-  { id: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro',         tier: 'premium' },
-  { id: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash',       tier: 'fast'    },
-  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite',  tier: 'lite'    },
+  { id: 'gemini-3.1-pro-preview',        label: 'Gemini 3.1 Pro',         tier: 'premium' },
+  { id: 'gemini-3-flash-preview',        label: 'Gemini 3 Flash',         tier: 'fast'    },
+  { id: 'gemini-3.1-flash-lite-preview', label: 'Gemini 3.1 Flash Lite',  tier: 'lite'    },
+  { id: 'gemini-2.5-flash',              label: 'Gemini 2.5 Flash',       tier: 'fast'    },
 ] as const;
 
 export type ModelId = typeof AVAILABLE_MODELS[number]['id'];
 
-const DEFAULT_MODEL: ModelId = 'gemini-3-flash';
+const DEFAULT_MODEL: ModelId = 'gemini-3-flash-preview';
 
 // Per-user model preference: userId → modelId
 const userModelPrefs = new Map<string, ModelId>();
@@ -53,7 +52,12 @@ export function getUserModel(userId: string): ModelId {
 
 function getModelInstance(modelId: ModelId) {
   if (!genAI) return null;
-  return genAI.getGenerativeModel({ model: modelId });
+  return genAI.getGenerativeModel({
+    model: modelId,
+    generationConfig: {
+      maxOutputTokens: 4096,
+    },
+  });
 }
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -266,16 +270,25 @@ export function renameSession(sessionId: string, title: string, userId?: string)
 
 // ── History helpers ────────────────────────────────────────────────────────
 
-/** Load a session's history from Supabase (lazy, once per sessionId) */
+/** Load a session's history from Supabase (lazy, once per sessionId). userId enforced for isolation. */
 export async function ensureChatHistoryLoaded(sessionId: string, userId?: string): Promise<void> {
-  if (conversationStore.has(sessionId)) return;
+  if (conversationStore.has(sessionId)) {
+    // Verify ownership if already loaded
+    const existingMeta = sessionMetaStore.get(sessionId);
+    if (userId && existingMeta && existingMeta.userId !== userId) {
+      throw new Error('Access denied: session belongs to another user');
+    }
+    return;
+  }
   if (!supabase) { conversationStore.set(sessionId, []); return; }
   try {
-    const { data } = await supabase
+    let query = supabase
       .from('ai_chat_history')
       .select('messages,title,user_id,created_at,updated_at,last_message_at')
-      .eq('session_id', sessionId)
-      .maybeSingle();
+      .eq('session_id', sessionId);
+    // Enforce user isolation at the DB level
+    if (userId) query = query.eq('user_id', userId);
+    const { data } = await query.maybeSingle();
     if (data) {
       const msgs: ChatMessage[] = Array.isArray(data.messages) ? data.messages.slice(-MAX_HISTORY) : [];
       conversationStore.set(sessionId, msgs);
@@ -358,15 +371,21 @@ export function getChatHistory(sessionId: string): ChatMessage[] {
   return getHistory(sessionId);
 }
 
-export async function clearChatHistory(sessionId: string): Promise<void> {
-  conversationStore.delete(sessionId);
+export async function clearChatHistory(sessionId: string, userId?: string): Promise<void> {
+  // Verify ownership before clearing
   const meta = sessionMetaStore.get(sessionId);
+  if (userId && meta && meta.userId !== userId) {
+    throw new Error('Access denied: session belongs to another user');
+  }
+  conversationStore.delete(sessionId);
   if (meta) { meta.messageCount = 0; meta.title = 'New Chat'; }
   if (!supabase) return;
   try {
-    await supabase.from('ai_chat_history')
+    let query = supabase.from('ai_chat_history')
       .update({ messages: [], title: 'New Chat', updated_at: new Date().toISOString() })
       .eq('session_id', sessionId);
+    if (userId) query = query.eq('user_id', userId);
+    await query;
   } catch {}
 }
 
@@ -441,7 +460,7 @@ export async function getUserMemoryAll(userId: string): Promise<UserMemoryFact[]
 /** Asynchronously extract user facts from a conversation turn and persist them. */
 async function extractAndSaveMemory(userId: string, userQuery: string, aiReply: string): Promise<void> {
   if (!genAI) return;
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' as ModelId });
+  const model = genAI.getGenerativeModel({ model: 'gemini-3.1-flash-lite-preview' as ModelId });
   try {
     const prompt = `Extract 0-5 personal facts the USER explicitly stated about themselves from this message.
 Only extract facts the user said: their name, language they speak, their job/workplace, where they live, preferences, timezone, or similar personal context.
@@ -481,7 +500,7 @@ function buildMemorySection(memory: Record<string, string>): string {
 // answer from AI knowledge, manage tasks, or update their memory profile.
 
 const WEB_SIGNALS   = /\b(news|latest|current events|today's news|stock price|weather|sports score|match result|trending|who is|what is [a-z]|how do|how does|how to|meaning of|definition|translate|convert|calculate|formula|recipe|tutorial|best way|explain|difference between|when was|where is|why is|wikipedia|search for)\b/i;
-const INBOX_SIGNALS = /\b(message|messages|whatsapp|gmail|email|sent|received|wrote|said|asked|replied|chat|group|forward|document|file|pdf|photo|image|video|audio|attachment|shared|somebody|someone sent|contact|inbox|unread|recent messages|latest messages|new messages|conversation|thread)\b|anything from|anything about|any message|tell me about messages|show me messages|what did .+ (say|send|write)|who sent/i;
+const INBOX_SIGNALS = /\b(message|messages|whatsapp|gmail|email|sent|received|wrote|said|asked|replied|chat|group|forward|document|file|pdf|photo|image|video|attachment|shared|somebody|someone sent|contact|inbox|unread|recent messages|latest messages|new messages|conversation|thread)\b|anything from|anything about|any message|tell me about messages|show me messages|what did .+ (say|send|write)|who sent/i;
 const MEMORY_SIGNALS = /\b(remember (that|me|my|i am|i'm)|my name is|i am from|i live in|i work at|i speak|call me|update my|forget (that|my|me)|what do you know about me|about me|my preference|my profile)\b/i;
 
 export function detectQueryIntent(query: string, inboxCandidateCount = 0): QueryIntent {
@@ -564,7 +583,7 @@ End your response with this JSON on a new line:
     log.error('Web search failed, falling back to model knowledge', err.message);
     // Fallback: answer from model training data without grounding
     try {
-      const fallbackModel = getModelInstance(modelId) || getModelInstance('gemini-3-flash' as ModelId);
+      const fallbackModel = getModelInstance(modelId) || getModelInstance('gemini-3-flash-preview' as ModelId);
       if (!fallbackModel) throw new Error('No model');
       const result2 = await fallbackModel.generateContent(prompt);
       const text2 = result2.response.text();
@@ -949,7 +968,7 @@ function buildConversationPrompt(
   }
 
   return `You are Mindline AI — a smart personal assistant with full access to the user's WhatsApp and Gmail inbox.
-You can read every message, document, image, audio file, and attachment they've received.
+You can read every message, document, image, and attachment they've received.
 
 TODAY: ${new Date().toISOString().slice(0, 10)}
 DATABASE: ${totalMessages} total messages | ${candidateCount} relevant messages shown below
@@ -984,6 +1003,102 @@ Respond ONLY with this JSON (no text outside):
   "reply": "Your markdown-formatted answer. Bold sender names, filenames. Cite relative times. Use bullet points for multiple items. Quote key content with > blockquotes when helpful.",
   "suggestions": ["follow-up question 1", "follow-up question 2", "follow-up question 3", "follow-up question 4"]
 }`;  // B3: sourceIndices removed — match-based sources computed after reply
+}
+
+/**
+ * Build a streaming-optimised prompt that does NOT require JSON output.
+ * The AI responds in plain markdown so chunks can be sent directly to the client
+ * without showing raw JSON wrapper to the user during streaming.
+ */
+function buildStreamingPrompt(
+  userQuery: string,
+  history: ChatMessage[],
+  messageContext: string,
+  candidateCount: number,
+  totalMessages: number,
+  memorySection = ''
+): string {
+  const recentHistory = history.slice(-16);
+
+  let conversationSection = '';
+  if (recentHistory.length > 0) {
+    const histLines = recentHistory.map(h => {
+      if (h.role === 'user') {
+        return `USER_ASKED: ${h.content.slice(0, 500)}`;
+      } else {
+        const brief = h.content.replace(/\*\*/g, '').slice(0, 500);
+        return `AI_REPLIED: ${brief}${h.content.length > 500 ? '...' : ''}`;
+      }
+    }).join('\n');
+    conversationSection =
+      '\nPRIOR CONVERSATION TURNS (for follow-up context ONLY — these are NOT inbox messages):\n' +
+      histLines + '\n';
+  }
+
+  return `You are Mindline AI — a smart personal assistant with full access to the user's WhatsApp and Gmail inbox.
+You can read every message, document, image, and attachment they've received.
+
+TODAY: ${new Date().toISOString().slice(0, 10)}
+DATABASE: ${totalMessages} total messages | ${candidateCount} relevant messages shown below
+${memorySection}${conversationSection}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INBOX DATA (sorted oldest → newest — bottom entries = most recent)
+Each entry has: [index] FROM | CHAT | TIME (relative age)
+Fields: CONTENT, FILE, IMAGE_DESCRIPTION, IMAGE_OCR_TEXT, DOC_SUMMARY, DOC_KEY_TEXT, DOC_TOPICS, DOC_ENTITIES, DOC_TYPE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${messageContext}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+USER: "${userQuery}"
+
+INSTRUCTIONS:
+1. ANSWER FROM THE INBOX DATA ABOVE — this is the user's real inbox. Search every field (CONTENT, FILE, IMAGE_DESCRIPTION, IMAGE_OCR_TEXT, DOC_SUMMARY, DOC_KEY_TEXT, DOC_ENTITIES).
+2. For "recent" / "latest" / "new" queries → entries near the BOTTOM are newest. Check relative ages.
+3. For file/document queries → look at FILE, DOC_SUMMARY, DOC_KEY_TEXT, DOC_TYPE fields. Report: filename (bold), sender, time, and what the doc contains.
+4. For image queries → look at IMAGE_DESCRIPTION and IMAGE_OCR_TEXT. Describe what the image shows and any text found in it.
+5. ALWAYS cite: **sender name**, chat/group name, and when it was sent (relative time like "2 hours ago").
+6. If a message has both text content AND a file/image, mention both.
+7. Use markdown formatting: **bold** for names and filenames, bullet points for lists, > blockquotes for quoting messages.
+8. If quoting a message, use the exact content — don't paraphrase.
+9. If the user asks about a document's contents, use DOC_SUMMARY and DOC_KEY_TEXT to explain what's in it.
+10. NEVER say "I couldn't find anything" if there ARE matching entries above — re-read the data carefully.
+11. If there are truly 0 relevant entries shown above (empty INBOX DATA), tell the user honestly "I don't see any matching messages in your inbox" and suggest refining their search or checking spelling. Do NOT make up fake messages.
+12. Prior conversation turns are for context only — do NOT treat old AI replies as inbox data.
+13. Keep answers focused and organized. Lead with the most important finding.
+
+Respond directly in markdown. Do NOT wrap your response in JSON or code blocks. Just write the answer naturally using markdown formatting.`;
+}
+
+/**
+ * Generate follow-up suggestions based on the query intent and reply content.
+ * This replaces the JSON-embedded suggestions for streaming mode.
+ */
+function generateSuggestions(userQuery: string, reply: string, intent: QueryIntent): string[] {
+  const q = userQuery.toLowerCase();
+
+  if (intent === 'task') {
+    return ['Show all my tasks', 'What tasks are due today?', 'Create a new task', 'Mark tasks as complete'];
+  }
+  if (intent === 'web') {
+    return ['Tell me more about this', 'Search for related topics', 'Summarize the key points', 'What else is trending?'];
+  }
+  if (intent === 'memory') {
+    return ['What do you know about me?', 'Update my preferences', 'Forget everything about me'];
+  }
+
+  // Intent-based defaults for inbox queries
+  if (q.includes('file') || q.includes('document') || q.includes('pdf') || q.includes('image') || q.includes('photo')) {
+    return ['Show more files', 'Find recent documents', 'What images were sent?', 'Summarize this document'];
+  }
+  if (q.includes('summar') || q.includes('today') || q.includes('overview')) {
+    return ['Show yesterday\'s summary', 'What tasks came up?', 'Any urgent messages?', 'Who messaged me?'];
+  }
+  if (q.includes('task') || q.includes('todo') || q.includes('deadline') || q.includes('action')) {
+    return ['Show all tasks', 'What\'s most urgent?', 'Tasks from this week', 'Create a reminder'];
+  }
+
+  // Generic follow-ups
+  return ['Tell me more', 'Show recent messages', 'Find tasks & action items', 'Summarize today'];
 }
 
 // ── Main chat function ──────────────────────────────────────────────────────
@@ -1117,7 +1232,7 @@ export async function chat(
 
       // Use a different model on retry if premium fails
       const retryModelId = attempt > 0
-        ? (modelId === 'gemini-3-pro' ? 'gemini-3-flash' as ModelId : 'gemini-2.5-flash' as ModelId)
+        ? (modelId === 'gemini-3.1-pro-preview' ? 'gemini-3-flash-preview' as ModelId : 'gemini-2.5-flash' as ModelId)
         : modelId;
       const activeModel = attempt > 0 ? getModelInstance(retryModelId) || model : model;
 
@@ -1293,70 +1408,92 @@ export async function chatStream(
 
   const history = getHistory(sessionId);
   const messageContext = buildMessageContext(candidates);
-  const prompt = buildConversationPrompt(userQuery, history.slice(0, -1), messageContext, candidates.length, totalMessages, streamMemSection);
+  // Use streaming-optimised prompt (plain markdown output, no JSON wrapper)
+  const prompt = buildStreamingPrompt(userQuery, history.slice(0, -1), messageContext, candidates.length, totalMessages, streamMemSection);
 
-  try {
-    const result = await model.generateContentStream(prompt);
-    let fullText = '';
+  // Try streaming with retry on failure
+  const STREAM_MAX_RETRIES = 2;
+  let lastStreamError: Error | null = null;
 
-    for await (const chunk of result.stream) {
-      if (signal?.aborted) break;
-      const delta = chunk.text();
-      if (delta) {
-        fullText += delta;
-        onChunk({ delta, done: false });
+  for (let attempt = 0; attempt <= STREAM_MAX_RETRIES; attempt++) {
+    try {
+      const retryModelId = attempt > 0
+        ? (modelId === 'gemini-3.1-pro-preview' ? 'gemini-3-flash-preview' as ModelId : 'gemini-2.5-flash' as ModelId)
+        : modelId;
+      const activeModel = attempt > 0 ? (getModelInstance(retryModelId) || model) : model;
+      if (attempt > 0) log.info('chatStream retry', `attempt=${attempt} model=${retryModelId}`);
+
+      const result = await activeModel.generateContentStream(prompt);
+      let fullText = '';
+
+      for await (const chunk of result.stream) {
+        if (signal?.aborted) break;
+        const delta = chunk.text();
+        if (delta) {
+          fullText += delta;
+          onChunk({ delta, done: false });
+        }
       }
+
+      // The streamed text is already plain markdown (no JSON wrapper to parse)
+      const reply = fullText.trim();
+
+      // Match-based sources — find candidates whose sender/chat name appears in the reply
+      const replyLower = reply.toLowerCase();
+      const seenIds = new Set<string>();
+      const sources: ChatSource[] = candidates
+        .filter(m => {
+          const s = (m.sender || '').toLowerCase();
+          const c = (m.chat_name || '').toLowerCase();
+          return (s.length > 2 && replyLower.includes(s)) || (c.length > 2 && replyLower.includes(c));
+        })
+        .slice(0, 8)
+        .map(m => buildSource(m, 'Mentioned in response'))
+        .filter(s => {
+          const k = s.messageKey || s.messageId;
+          if (k && seenIds.has(k)) return false;
+          if (k) seenIds.add(k);
+          return true;
+        });
+
+      // Generate suggestions based on intent (no JSON parsing needed)
+      const suggestions = generateSuggestions(userQuery, reply, streamIntent);
+
+      const usedModel = attempt > 0 ? retryModelId : modelId;
+      const assistantMsg: ChatMessage = {
+        id: genId(),
+        role: 'assistant',
+        content: reply,
+        timestamp: new Date().toISOString(),
+        sources,
+        suggestions,
+        stats: { messagesSearched: totalMessages, sourcesFound: sources.length },
+        model: usedModel,
+        intent: streamIntent,
+      };
+      pushMessage(sessionId, assistantMsg, userId);
+      extractAndSaveMemory(userId, userQuery, reply).catch(() => {});
+
+      const sessionTitle = sessionMetaStore.get(sessionId)?.title;
+      onChunk({ done: true, sources, webSources: [], suggestions, stats: assistantMsg.stats!, sessionId, sessionTitle, model: usedModel, intent: streamIntent });
+      return; // success — exit retry loop
+
+    } catch (err: any) {
+      if (signal?.aborted) return;
+      lastStreamError = err;
+      log.error('chatStream attempt failed', `attempt=${attempt} error=${err.message}`);
+      if (attempt < STREAM_MAX_RETRIES) continue; // retry with fallback model
     }
-
-    // Parse JSON from streamed text
-    let parsed: any = {};
-    const jsonMatch = fullText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try { parsed = JSON.parse(jsonMatch[0]); } catch {}
-    }
-    // If the full text is not valid JSON, treat the whole thing as a reply
-    const reply = parsed.reply || fullText;
-
-    // Match-based sources
-    const replyLower = reply.toLowerCase();
-    const seenIds = new Set<string>();
-    const sources: ChatSource[] = candidates
-      .filter(m => {
-        const s = (m.sender || '').toLowerCase();
-        const c = (m.chat_name || '').toLowerCase();
-        return (s.length > 2 && replyLower.includes(s)) || (c.length > 2 && replyLower.includes(c));
-      })
-      .slice(0, 8)
-      .map(m => buildSource(m, 'Mentioned in response'))
-      .filter(s => {
-        const k = s.messageKey || s.messageId;
-        if (k && seenIds.has(k)) return false;
-        if (k) seenIds.add(k);
-        return true;
-      });
-
-    const assistantMsg: ChatMessage = {
-      id: genId(),
-      role: 'assistant',
-      content: reply,
-      timestamp: new Date().toISOString(),
-      sources,
-      suggestions: (parsed.suggestions || []).slice(0, 4),
-      stats: { messagesSearched: totalMessages, sourcesFound: sources.length },
-      model: modelId,
-      intent: streamIntent,
-    };
-    pushMessage(sessionId, assistantMsg, userId);
-    extractAndSaveMemory(userId, userQuery, reply).catch(() => {});
-
-    const sessionTitle = sessionMetaStore.get(sessionId)?.title;
-    onChunk({ done: true, sources, webSources: [], suggestions: assistantMsg.suggestions || [], stats: assistantMsg.stats!, sessionId, sessionTitle, model: modelId, intent: streamIntent });
-
-  } catch (err: any) {
-    if (signal?.aborted) return;
-    log.error('chatStream failed', err.message);
-    onChunk({ done: true, sources: [], suggestions: [], stats: { messagesSearched: totalMessages, sourcesFound: 0 }, sessionId, model: modelId });
   }
+
+  // All retries exhausted — send error response with more helpful message
+  log.error('chatStream all retries failed', lastStreamError?.message || 'unknown');
+  const errDetail = lastStreamError?.message || 'Unknown error';
+  onChunk({
+    delta: `I wasn't able to generate a response after ${STREAM_MAX_RETRIES + 1} attempts. Error: *${errDetail}*\n\nPlease try again or switch to a different model.`,
+    done: false,
+  });
+  onChunk({ done: true, sources: [], suggestions: ['Try again', 'Switch to Gemini 3 Flash', 'Show recent messages'], stats: { messagesSearched: totalMessages, sourcesFound: 0 }, sessionId, model: modelId });
 }
 
 // ── Helper: build a ChatSource from MessageData ─────────────────────────────

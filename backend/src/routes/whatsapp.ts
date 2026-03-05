@@ -7,7 +7,7 @@
 import { Router, Request, Response } from 'express';
 import { EventEmitter } from 'events';
 import { subscribeToLogs, unsubscribeFromLogs } from '../services/console-logger';
-import { getMediaFromCache } from '../services/whatsapp-integrated';
+import { getMediaFromCache, redownloadMedia } from '../services/whatsapp-integrated';
 
 const router = Router();
 
@@ -323,14 +323,24 @@ router.get('/events', (req: Request, res: Response) => {
 });
 
 // GET /api/whatsapp/media/:messageKey - Stream a cached media buffer to the client
-router.get('/media/:messageKey', (req: Request, res: Response) => {
+// Tries in-memory → disk → on-demand re-download from WhatsApp servers
+router.get('/media/:messageKey', async (req: Request, res: Response) => {
   const { messageKey } = req.params;
-  const entry = getMediaFromCache(messageKey);
+
+  // 1) Check in-memory + disk cache
+  let entry = getMediaFromCache(messageKey);
+
+  // 2) If not cached, attempt on-demand re-download from WhatsApp servers
+  if (!entry) {
+    try {
+      entry = await redownloadMedia(messageKey);
+    } catch { /* swallow — will 404 below */ }
+  }
 
   if (!entry) {
     return res.status(404).json({
       success: false,
-      error: 'Media not found in cache. It may have been received before this server session, or was too large to cache.'
+      error: 'Media not found. The file may have expired on WhatsApp servers.'
     });
   }
 
@@ -346,6 +356,7 @@ router.get('/media/:messageKey', (req: Request, res: Response) => {
   res.setHeader('Content-Length', entry.size.toString());
   res.setHeader('Cache-Control', 'private, max-age=300');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.send(entry.buffer);
 });
 

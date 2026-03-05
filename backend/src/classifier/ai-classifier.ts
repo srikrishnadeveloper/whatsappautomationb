@@ -5,15 +5,14 @@ import { classifyMessage as ruleBasedClassify } from './rule-based';
 // Initialize Google Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY || '');
 
-// Latest Google AI Studio models (September 2025) in order of preference
-// Source: https://ai.google.dev/gemini-api/docs/models (Updated: 2025-09-29)
+// Latest Google AI Studio models (March 2026) in order of preference
+// Source: https://ai.google.dev/gemini-api/docs/models
 const MODEL_NAMES = [
-  'gemini-3-flash',                // RECOMMENDED: Latest fast model
-  'gemini-3-pro',                  // Latest advanced reasoning model
-  'gemini-2.5-flash',              // Fast & intelligent (June 2025)
-  'gemini-2.5-flash-lite',         // Fastest, cost-efficient (July 2025)
-  'gemini-2.5-pro',                // Advanced reasoning (June 2025)
-  'gemini-1.5-flash',              // Legacy fast model (stable)
+  'gemini-3-flash-preview',        // RECOMMENDED: Best multimodal, agentic (Dec 2025)
+  'gemini-3.1-pro-preview',        // Most advanced reasoning (Feb 2026)
+  'gemini-3.1-flash-lite-preview', // Fastest, budget-friendly (Mar 2026)
+  'gemini-2.5-flash',              // Stable fallback
+  'gemini-2.5-pro',                // Legacy capable model
 ];
 
 let activeModel: any = null;

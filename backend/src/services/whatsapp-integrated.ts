@@ -237,10 +237,10 @@ const RECONNECT_BACKOFF_BASE = 3000; // Faster base delay (was 5000)
 const processedMessageIds = new Set<string>();
 const MAX_PROCESSED_CACHE = 5000; // Keep last 5000 message IDs in memory
 
-// ── In-memory media buffer cache ────────────────────────────────────────────
+// ── Persistent media cache (in-memory + disk) ──────────────────────────────
 // Stores downloaded media buffers keyed by WhatsApp message key ID.
-// Allows the frontend to download media via /api/whatsapp/media/:key endpoint.
-// Capped at 200 entries; oldest evicted when full.
+// Saves files to disk so they survive server restarts.
+// In-memory cache is a hot layer; disk is the persistent fallback.
 export interface MediaCacheEntry {
   buffer: Buffer;
   mimeType: string;
@@ -252,21 +252,214 @@ export interface MediaCacheEntry {
 const mediaCache = new Map<string, MediaCacheEntry>();
 const MAX_MEDIA_CACHE = 200;
 
+// Disk media storage directory
+const MEDIA_DIR = path.join(__dirname, '../../_IGNORE_session/media');
+const MEDIA_META_FILE = path.join(MEDIA_DIR, '_index.json');
+
+// Ensure media directory exists on module load
+try { if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch {}
+
+interface MediaDiskMeta {
+  mimeType: string;
+  fileName: string;
+  size: number;
+  mediaType: 'image' | 'video' | 'audio' | 'sticker' | 'document';
+}
+
+// Load disk metadata index
+let mediaDiskIndex: Record<string, MediaDiskMeta> = {};
+try {
+  if (fs.existsSync(MEDIA_META_FILE)) {
+    mediaDiskIndex = JSON.parse(fs.readFileSync(MEDIA_META_FILE, 'utf-8'));
+  }
+} catch { mediaDiskIndex = {}; }
+
+function saveMediaIndex() {
+  try {
+    fs.writeFileSync(MEDIA_META_FILE, JSON.stringify(mediaDiskIndex), 'utf-8');
+  } catch {}
+}
+
+function saveMediaToDisk(key: string, entry: MediaCacheEntry) {
+  try {
+    if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
+    const safeKey = key.replace(/[^a-zA-Z0-9_\-]/g, '_');
+    fs.writeFileSync(path.join(MEDIA_DIR, safeKey), entry.buffer);
+    mediaDiskIndex[key] = {
+      mimeType: entry.mimeType,
+      fileName: entry.fileName,
+      size: entry.size,
+      mediaType: entry.mediaType,
+    };
+    saveMediaIndex();
+  } catch (err: any) {
+    log.warning('Failed to persist media to disk', err.message);
+  }
+}
+
+function loadMediaFromDisk(key: string): MediaCacheEntry | null {
+  const meta = mediaDiskIndex[key];
+  if (!meta) return null;
+  try {
+    const safeKey = key.replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const filePath = path.join(MEDIA_DIR, safeKey);
+    if (!fs.existsSync(filePath)) return null;
+    const buffer = fs.readFileSync(filePath);
+    return {
+      buffer,
+      mimeType: meta.mimeType,
+      fileName: meta.fileName,
+      size: meta.size,
+      cachedAt: Date.now(),
+      mediaType: meta.mediaType,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function addToMediaCache(key: string, entry: MediaCacheEntry) {
-  // Evict oldest entries if we're at capacity
+  // Evict oldest entries from memory if at capacity
   if (mediaCache.size >= MAX_MEDIA_CACHE) {
     const oldest = [...mediaCache.entries()].sort((a, b) => a[1].cachedAt - b[1].cachedAt)[0];
     if (oldest) mediaCache.delete(oldest[0]);
   }
   mediaCache.set(key, entry);
+  // Persist to disk (fire-and-forget)
+  saveMediaToDisk(key, entry);
 }
 
 export function getMediaFromCache(messageKey: string): MediaCacheEntry | null {
-  return mediaCache.get(messageKey) || null;
+  // Check in-memory first
+  const memEntry = mediaCache.get(messageKey);
+  if (memEntry) return memEntry;
+
+  // Fall back to disk
+  const diskEntry = loadMediaFromDisk(messageKey);
+  if (diskEntry) {
+    // Promote back to in-memory cache
+    mediaCache.set(messageKey, diskEntry);
+    return diskEntry;
+  }
+
+  return null;
 }
 
 export function listMediaCacheKeys(): string[] {
-  return [...mediaCache.keys()];
+  // Combine memory + disk keys
+  const keys = new Set<string>([...mediaCache.keys(), ...Object.keys(mediaDiskIndex)]);
+  return [...keys];
+}
+
+// ── Message proto storage (for on-demand re-download) ──────────────────────
+// Stores the serialised Baileys message proto alongside each media file so we
+// can re-download the media from WhatsApp servers even after a server restart.
+const PROTO_DIR = path.join(MEDIA_DIR, '_protos');
+try { if (!fs.existsSync(PROTO_DIR)) fs.mkdirSync(PROTO_DIR, { recursive: true }); } catch {}
+
+function saveMessageProto(messageKey: string, msg: proto.IWebMessageInfo) {
+  try {
+    if (!fs.existsSync(PROTO_DIR)) fs.mkdirSync(PROTO_DIR, { recursive: true });
+    const safeKey = messageKey.replace(/[^a-zA-Z0-9_\-]/g, '_');
+    // Store a minimal subset of the proto — only the fields needed by downloadMediaMessage
+    const serialised = JSON.stringify({
+      key: msg.key,
+      message: msg.message,
+      messageTimestamp: msg.messageTimestamp,
+    });
+    fs.writeFileSync(path.join(PROTO_DIR, `${safeKey}.json`), serialised, 'utf-8');
+  } catch (err: any) {
+    log.warning('Failed to save message proto', err.message);
+  }
+}
+
+function loadMessageProto(messageKey: string): proto.IWebMessageInfo | null {
+  try {
+    const safeKey = messageKey.replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const filePath = path.join(PROTO_DIR, `${safeKey}.json`);
+    if (!fs.existsSync(filePath)) return null;
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as proto.IWebMessageInfo;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Attempt to re-download media from WhatsApp servers using the stored message proto.
+ * Returns the MediaCacheEntry on success, null on failure.
+ */
+export async function redownloadMedia(messageKey: string): Promise<MediaCacheEntry | null> {
+  // Already cached? Return it.
+  const cached = getMediaFromCache(messageKey);
+  if (cached) return cached;
+
+  // Need active WhatsApp socket
+  if (!whatsappSocket) {
+    log.warning('Re-download skipped', 'No active WhatsApp connection');
+    return null;
+  }
+
+  // Load stored proto
+  const msgProto = loadMessageProto(messageKey);
+  if (!msgProto) {
+    log.warning('Re-download skipped', `No stored proto for key ${messageKey}`);
+    return null;
+  }
+
+  // Determine media type and metadata from the proto
+  const m = msgProto.message;
+  if (!m) return null;
+
+  const isImage    = !!m.imageMessage;
+  const isVideo    = !!m.videoMessage;
+  const isAudio    = !!m.audioMessage;
+  const isSticker  = !!m.stickerMessage;
+  const isDocument = !!m.documentMessage || !!m.documentWithCaptionMessage;
+
+  if (!isImage && !isVideo && !isAudio && !isSticker && !isDocument) return null;
+
+  const mimeType = (
+    m.imageMessage?.mimetype ||
+    m.videoMessage?.mimetype ||
+    m.audioMessage?.mimetype ||
+    m.stickerMessage?.mimetype ||
+    m.documentMessage?.mimetype ||
+    m.documentWithCaptionMessage?.message?.documentMessage?.mimetype ||
+    'application/octet-stream'
+  );
+  const ext = mimeType.split('/')[1]?.split(';')[0] || 'bin';
+  const mediaTypeLabel = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : isSticker ? 'sticker' : 'document';
+  const fileName = isDocument
+    ? (m.documentMessage?.fileName || m.documentWithCaptionMessage?.message?.documentMessage?.fileName || `doc.${ext}`)
+    : `${mediaTypeLabel}_${messageKey}.${ext}`;
+
+  try {
+    log.info('\u{1F504} Re-downloading media', `key=${messageKey} type=${mediaTypeLabel}`);
+
+    const buf = await downloadMediaMessage(
+      msgProto,
+      'buffer',
+      {},
+      { logger: pino({ level: 'silent' }) as any, reuploadRequest: whatsappSocket.updateMediaMessage }
+    ) as Buffer;
+
+    const entry: MediaCacheEntry = {
+      buffer: buf,
+      mimeType,
+      fileName,
+      size: buf.length,
+      cachedAt: Date.now(),
+      mediaType: mediaTypeLabel as MediaCacheEntry['mediaType'],
+    };
+
+    // Cache it again (memory + disk)
+    addToMediaCache(messageKey, entry);
+    log.success('\u{1F504} Re-download successful', `${fileName} (${(buf.length / 1024).toFixed(1)} KB)`);
+    return entry;
+  } catch (err: any) {
+    log.warning('\u{1F504} Re-download failed', err.message);
+    return null;
+  }
 }
 
 // ---- MISSED MESSAGE CATCH-UP STATE ----
@@ -522,6 +715,8 @@ async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> 
             cachedAt: Date.now(),
             mediaType: 'image',
           });
+          // Store proto for future re-download
+          saveMessageProto(msg.key.id, msg);
           // Persist media ref to Supabase for cross-restart visibility
           if (sessionOwnerId && supabase) {
             Promise.resolve(supabase.from('media_cache_refs').upsert({
@@ -585,6 +780,8 @@ async function storeMessage(msg: proto.IWebMessageInfo): Promise<string | null> 
             cachedAt: Date.now(),
             mediaType: mediaTypeLabel as MediaCacheEntry['mediaType'],
           });
+          // Store proto for future re-download
+          saveMessageProto(msg.key.id, msg);
           log.info(`📦 ${mediaTypeLabel} cached`, `${fileName} (${(buf.length / 1024).toFixed(1)} KB)`);
           // Persist media ref to Supabase for cross-restart visibility
           if (sessionOwnerId && supabase) {
